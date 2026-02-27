@@ -39,13 +39,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install bats-core (Ubuntu)
-        if: runner.os == 'Linux'
-        run: sudo apt-get install -y bats
-
-      - name: Install bats-core (macOS)
-        if: runner.os == 'macOS'
-        run: brew install bats-core
+      - name: Install bats-core
+        run: |
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            sudo npm install -g bats
+          else
+            brew install bats-core
+          fi
 
       - name: Clone bats helpers
         run: |

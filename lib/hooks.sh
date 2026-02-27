@@ -92,10 +92,10 @@ _hooks_install_husky() {
   if [[ ! -d "$PROJECT_ROOT/node_modules/husky" ]]; then
     log_info "Installing husky..."
     case "$pkg_manager" in
-      pnpm) (cd "$PROJECT_ROOT" && pnpm add -D -w husky 2>/dev/null) ;;
-      yarn) (cd "$PROJECT_ROOT" && yarn add -D husky 2>/dev/null) ;;
-      bun)  (cd "$PROJECT_ROOT" && bun add -d husky 2>/dev/null) ;;
-      npm)  (cd "$PROJECT_ROOT" && npm install -D husky 2>/dev/null) ;;
+      pnpm) (cd "$PROJECT_ROOT" && pnpm add -D -w husky 2>/dev/null) || log_warn "Failed to install husky via pnpm" ;;
+      yarn) (cd "$PROJECT_ROOT" && yarn add -D husky 2>/dev/null) || log_warn "Failed to install husky via yarn" ;;
+      bun)  (cd "$PROJECT_ROOT" && bun add -d husky 2>/dev/null) || log_warn "Failed to install husky via bun" ;;
+      npm)  (cd "$PROJECT_ROOT" && npm install -D husky 2>/dev/null) || log_warn "Failed to install husky via npm" ;;
     esac
   fi
 
@@ -103,10 +103,10 @@ _hooks_install_husky() {
   if [[ ! -d "$PROJECT_ROOT/node_modules/lint-staged" ]]; then
     log_info "Installing lint-staged..."
     case "$pkg_manager" in
-      pnpm) (cd "$PROJECT_ROOT" && pnpm add -D -w lint-staged 2>/dev/null) ;;
-      yarn) (cd "$PROJECT_ROOT" && yarn add -D lint-staged 2>/dev/null) ;;
-      bun)  (cd "$PROJECT_ROOT" && bun add -d lint-staged 2>/dev/null) ;;
-      npm)  (cd "$PROJECT_ROOT" && npm install -D lint-staged 2>/dev/null) ;;
+      pnpm) (cd "$PROJECT_ROOT" && pnpm add -D -w lint-staged 2>/dev/null) || log_warn "Failed to install lint-staged via pnpm" ;;
+      yarn) (cd "$PROJECT_ROOT" && yarn add -D lint-staged 2>/dev/null) || log_warn "Failed to install lint-staged via yarn" ;;
+      bun)  (cd "$PROJECT_ROOT" && bun add -d lint-staged 2>/dev/null) || log_warn "Failed to install lint-staged via bun" ;;
+      npm)  (cd "$PROJECT_ROOT" && npm install -D lint-staged 2>/dev/null) || log_warn "Failed to install lint-staged via npm" ;;
     esac
   fi
 
@@ -135,12 +135,15 @@ NODESCRIPT
 
 # Write the pre-commit hook for husky.
 _hooks_write_pre_commit_husky() {
-  cat > "$PROJECT_ROOT/.husky/pre-commit" << 'HOOK'
+  local pkg_manager
+  pkg_manager="$(detect_pkg_manager "$PROJECT_ROOT")"
+
+  cat > "$PROJECT_ROOT/.husky/pre-commit" << HOOK
 # ClaudeMix pre-commit hook — lint staged files
-pnpm lint-staged 2>/dev/null || npx lint-staged
+${pkg_manager} lint-staged 2>/dev/null || npx lint-staged
 HOOK
   chmod +x "$PROJECT_ROOT/.husky/pre-commit"
-  log_ok "Created .husky/pre-commit"
+  log_ok "Created .husky/pre-commit (using $pkg_manager)"
 }
 
 # Write a POSIX-compatible pre-push hook to a given path.

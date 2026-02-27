@@ -113,6 +113,14 @@ if [[ -n "$SHELL_RC" ]]; then
         info "Zsh completions installed to $local_completions"
       fi
     fi
+  elif [[ "$SHELL_NAME" == "bash" ]]; then
+    local_completions="$HOME/.local/share/bash-completion/completions"
+    if mkdir -p "$local_completions" 2>/dev/null; then
+      if [[ -f "$INSTALL_DIR/completions/$BIN_NAME.bash" ]]; then
+        cp "$INSTALL_DIR/completions/$BIN_NAME.bash" "$local_completions/$BIN_NAME"
+        info "Bash completions installed to $local_completions"
+      fi
+    fi
   elif [[ "$SHELL_NAME" == "fish" ]]; then
     local_completions="$HOME/.config/fish/completions"
     if mkdir -p "$local_completions" 2>/dev/null; then

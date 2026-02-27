@@ -233,4 +233,5 @@ _merge_queue_restore_branch() {
   if [[ -n "$merge_branch" ]] && branch_exists "$merge_branch"; then
     git -C "$PROJECT_ROOT" branch -D "$merge_branch" 2>/dev/null || true
   fi
+  trap - EXIT
 }

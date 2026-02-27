@@ -17,7 +17,7 @@ tui_main_menu() {
       new)     _tui_new_session ;;
       attach)  _tui_attach_session ;;
       list)    session_list "table"; _tui_pause ;;
-      merge)   merge_queue_run ;;
+      merge)   _tui_merge_menu ;;
       cleanup) _tui_cleanup ;;
       kill)    _tui_kill_session ;;
       hooks)   _tui_hooks_menu ;;
@@ -221,6 +221,34 @@ _tui_cleanup() {
 
   git -C "$PROJECT_ROOT" worktree prune 2>/dev/null || true
   _tui_pause
+}
+
+# ── Merge Menu ──────────────────────────────────────────────────────────────
+
+_tui_merge_menu() {
+  local action
+  if gum_available; then
+    action="$(gum choose \
+      --header "Merge Queue" \
+      "Run merge queue" \
+      "List eligible branches" \
+      "Back" \
+    )" || return 0
+  else
+    printf '\n  1) Run merge queue\n  2) List eligible branches\n  3) Back\nChoose: '
+    read -r num
+    case "$num" in
+      1) action="Run merge queue" ;;
+      2) action="List eligible branches" ;;
+      *) return 0 ;;
+    esac
+  fi
+
+  case "$action" in
+    "Run merge queue")         merge_queue_run ;;
+    "List eligible branches")  merge_queue_list; _tui_pause ;;
+    "Back")                    return 0 ;;
+  esac
 }
 
 # ── Hooks Menu ───────────────────────────────────────────────────────────────
