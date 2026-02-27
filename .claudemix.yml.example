@@ -1,0 +1,25 @@
+# ClaudeMix configuration
+# Drop this file as .claudemix.yml in your project root.
+# All values are optional — ClaudeMix auto-detects sensible defaults.
+# https://github.com/Draidel/ClaudeMix
+
+# Command to validate code before push.
+# Auto-detected from package.json, Makefile, Cargo.toml, or go.mod.
+validate: pnpm validate
+
+# Branches that cannot be pushed to directly (comma-separated).
+# Pre-push hook blocks pushes to these branches.
+protected_branches: main,staging
+
+# Target branch for merge queue PRs.
+merge_target: staging
+
+# Merge strategy for PRs: squash, merge, or rebase.
+merge_strategy: squash
+
+# Base branch for new worktrees.
+# New sessions branch off from this.
+base_branch: staging
+
+# Extra flags to pass to Claude Code on every session launch.
+claude_flags: --dangerously-skip-permissions --verbose

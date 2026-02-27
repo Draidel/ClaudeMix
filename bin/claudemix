@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  ClaudeMix — Multi-session orchestrator for Claude Code                  ║
+# ║  https://github.com/Draidel/ClaudeMix                                   ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# Usage:
+#   claudemix                    Interactive TUI menu
+#   claudemix <name>             Create/attach to a named session
+#   claudemix ls                 List active sessions
+#   claudemix kill <name>        Kill a session
+#   claudemix merge              Consolidate branches into a single PR
+#   claudemix cleanup            Remove merged worktrees
+#   claudemix hooks [install|uninstall|status]    Manage git hooks
+#   claudemix init               Generate .claudemix.yml config
+#   claudemix version            Show version
+
+set -euo pipefail
+
+# ── Resolve Script Location ─────────────────────────────────────────────────
+
+# Follow symlinks to find the real script location
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [[ -L "$SCRIPT_PATH" ]]; do
+  SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+  SCRIPT_PATH="$(readlink "$SCRIPT_PATH")"
+  [[ "$SCRIPT_PATH" != /* ]] && SCRIPT_PATH="$SCRIPT_DIR/$SCRIPT_PATH"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+CLAUDEMIX_HOME="$(dirname "$SCRIPT_DIR")"
+
+# ── Source Libraries ─────────────────────────────────────────────────────────
+
+source "$CLAUDEMIX_HOME/lib/core.sh"
+source "$CLAUDEMIX_HOME/lib/worktree.sh"
+source "$CLAUDEMIX_HOME/lib/session.sh"
+source "$CLAUDEMIX_HOME/lib/hooks.sh"
+source "$CLAUDEMIX_HOME/lib/merge-queue.sh"
+source "$CLAUDEMIX_HOME/lib/tui.sh"
+
+# ── Argument Parsing ─────────────────────────────────────────────────────────
+
+main() {
+  local command="${1:-}"
+
+  # Fast paths (no project context needed)
+  case "$command" in
+    -v|--version|version)
+      echo "claudemix v${CLAUDEMIX_VERSION}"
+      exit 0
+      ;;
+    -h|--help|help)
+      _show_help
+      exit 0
+      ;;
+  esac
+
+  # All other commands need a project
+  require_project
+  check_dependencies
+  load_config
+
+  case "$command" in
+    "")
+      # No args: interactive TUI
+      tui_main_menu
+      ;;
+    ls|list)
+      session_list "table"
+      ;;
+    kill)
+      shift
+      if [[ "${1:-}" == "all" ]]; then
+        session_kill_all
+      elif [[ -n "${1:-}" ]]; then
+        session_kill "$(sanitize_name "$1")" "${2:-keep}"
+      else
+        die "Usage: claudemix kill <session-name|all>"
+      fi
+      ;;
+    merge)
+      shift
+      if [[ "${1:-}" == "list" ]] || [[ "${1:-}" == "ls" ]]; then
+        merge_queue_list
+      else
+        merge_queue_run
+      fi
+      ;;
+    cleanup|clean)
+      log_info "Scanning for merged worktrees..."
+      local removed
+      removed="$(worktree_cleanup_merged)"
+      if (( removed > 0 )); then
+        log_ok "Cleaned up $removed worktree(s)"
+      else
+        log_info "No merged worktrees to clean up."
+      fi
+      ;;
+    hooks)
+      shift
+      case "${1:-status}" in
+        install)   hooks_install ;;
+        uninstall) hooks_uninstall ;;
+        status)    hooks_status ;;
+        *)         die "Usage: claudemix hooks [install|uninstall|status]" ;;
+      esac
+      ;;
+    init)
+      ensure_claudemix_dir
+      _detect_defaults
+      local config_path="$PROJECT_ROOT/$CLAUDEMIX_CONFIG_FILE"
+      if [[ -f "$config_path" ]]; then
+        log_warn "Config already exists: $config_path"
+        echo -n "Overwrite? [y/N] "
+        read -r yn
+        [[ "$yn" =~ ^[Yy] ]] || exit 0
+      fi
+      cat > "$config_path" << EOF
+# ClaudeMix configuration
+# https://github.com/Draidel/ClaudeMix
+
+validate: ${CFG_VALIDATE:-npm test}
+protected_branches: ${CFG_PROTECTED_BRANCHES}
+merge_target: ${CFG_MERGE_TARGET}
+merge_strategy: ${CFG_MERGE_STRATEGY}
+base_branch: ${CFG_BASE_BRANCH}
+claude_flags: ${CFG_CLAUDE_FLAGS}
+EOF
+      log_ok "Config written to $config_path"
+      ;;
+    *)
+      # Anything else is treated as a session name
+      shift 0  # keep $@ intact
+      session_create "$command" "${@:2}"
+      ;;
+  esac
+}
+
+_show_help() {
+  cat << 'EOF'
+ClaudeMix — Multi-session orchestrator for Claude Code
+
+USAGE
+  claudemix                         Interactive TUI menu
+  claudemix <name>                  Create or attach to a named session
+  claudemix <name> [claude-flags]   Create session with extra Claude flags
+  claudemix ls                      List active sessions
+  claudemix kill <name|all>         Kill a session (keeps worktree branch)
+  claudemix merge                   Consolidate branches into a single PR
+  claudemix merge list              Show branches eligible for merge
+  claudemix cleanup                 Remove worktrees for merged branches
+  claudemix hooks install           Install pre-commit + pre-push hooks
+  claudemix hooks uninstall         Remove ClaudeMix hooks
+  claudemix hooks status            Show current hook status
+  claudemix init                    Generate .claudemix.yml config
+  claudemix version                 Show version
+  claudemix help                    Show this help
+
+EXAMPLES
+  claudemix auth-fix                Start Claude session for auth work
+  claudemix ui-update               Start Claude session for UI work
+  claudemix ls                      See what's running
+  claudemix merge                   Bundle finished work into one PR
+  claudemix cleanup                 Remove worktrees after PR merge
+
+SESSION LIFECYCLE
+  1. claudemix <name>     Creates a git worktree + tmux session + launches Claude
+  2. Claude works          In an isolated branch (claudemix/<name>)
+  3. Push when ready       Pre-push hook validates code automatically
+  4. claudemix merge       Consolidate branches into a single PR
+  5. claudemix cleanup     Remove merged worktrees
+
+CONFIGURATION
+  Drop a .claudemix.yml in your project root. Run 'claudemix init' to generate
+  one with auto-detected defaults.
+
+DEPENDENCIES
+  Required: git, claude (Claude Code CLI)
+  Optional: tmux (session persistence), gum (interactive TUI), gh (merge queue PRs)
+
+More info: https://github.com/Draidel/ClaudeMix
+EOF
+}
+
+# ── Run ──────────────────────────────────────────────────────────────────────
+
+main "$@"
