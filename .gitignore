@@ -13,3 +13,7 @@ Thumbs.db
 /test-project/
 /tmp/
 /tests/tmp/
+
+# Node.js (dev tooling only)
+node_modules/
+package-lock.json
