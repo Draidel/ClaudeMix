@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # ClaudeMix — hooks.sh
 # Git hooks installation and management.
 # Supports husky (preferred for Node.js projects) or direct .git/hooks.

@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # ClaudeMix — session.sh
 # Session lifecycle: create, attach, list, kill.
 # A session = worktree + (optional) tmux session + Claude Code process.

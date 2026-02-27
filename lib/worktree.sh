@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # ClaudeMix — worktree.sh
 # Git worktree lifecycle: create, remove, list, cleanup.
 # Sourced by bin/claudemix. Never executed directly.
@@ -36,6 +37,7 @@ worktree_create() {
     }
   fi
 
+  # shellcheck disable=SC2034 # Read by session.sh after worktree_create
   WORKTREE_PATH="$worktree_path"
   log_ok "Worktree created at ${DIM}$worktree_path${RESET}"
 

@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # ClaudeMix — tui.sh
 # Interactive TUI menus using gum (with fallback to basic prompts).
 # Sourced by bin/claudemix. Never executed directly.

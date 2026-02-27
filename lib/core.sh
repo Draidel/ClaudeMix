@@ -1,9 +1,11 @@
+# shellcheck shell=bash
 # ClaudeMix — core.sh
 # Foundation: constants, colors, logging, config, dependency checks, utilities.
 # Sourced by bin/claudemix. Never executed directly.
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
+# shellcheck disable=SC2034 # Used by other modules via source
 readonly CLAUDEMIX_VERSION="0.2.0"
 readonly CLAUDEMIX_CONFIG_FILE=".claudemix.yml"
 readonly CLAUDEMIX_DIR=".claudemix"
@@ -14,6 +16,7 @@ readonly CLAUDEMIX_TMUX_PREFIX="claudemix-"
 
 # ── Colors ───────────────────────────────────────────────────────────────────
 
+# shellcheck disable=SC2034 # Colors used by other modules via source
 if [[ -t 1 ]] && [[ "${NO_COLOR:-}" != "1" ]]; then
   RED=$'\033[0;31m'
   GREEN=$'\033[0;32m'

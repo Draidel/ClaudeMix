@@ -1,0 +1,612 @@
+# =============================================================================
+# Release Workflow - Enterprise CI/CD Pipeline
+# =============================================================================
+#
+# PURPOSE:
+#   Complete CI/CD pipeline for the Diiirect monorepo. Validates code, detects
+#   changes, builds and deploys prebuilt artifacts to Vercel, deploys Supabase
+#   infrastructure, and creates GitHub Releases.
+#
+# TRIGGER:
+#   - Push to main branch
+#
+# PIPELINE:
+#   1. VALIDATE  → lint, type-check (via _validate.yml, build skipped)
+#   2. DETECT    → Determine which apps/services changed (Turborepo-aware)
+#   3. DEPLOY    → Build in GHA + deploy prebuilt to Vercel, Supabase migrations
+#   4. RELEASE   → semantic-release creates GitHub Release
+#   5. SUMMARY   → Generate pipeline results report
+#
+# DEPLOYMENT STRATEGY:
+#   Vercel Git integration auto-deploy is DISABLED. All builds happen in GitHub
+#   Actions using `vercel build --prod`, then prebuilt artifacts are uploaded
+#   to Vercel with `vercel deploy --prebuilt --prod`. This ensures:
+#   - Single build (no double build between CI and Vercel)
+#   - Real environment variables from `vercel pull` (not dummy placeholders)
+#   - What we validate IS what we deploy
+#
+# POST-RELEASE (separate workflows triggered by release:published):
+#   - build-desktop.yml → Electron builds (macOS/Windows/Linux)
+#   - build-mobile.yml  → EAS builds (iOS/Android)
+#
+# REQUIRED SECRETS:
+#   - TURBO_TOKEN: Vercel access token (used for both Turbo remote cache and Vercel CLI)
+#   - VERCEL_PROJECT_ID_WEBAPP: Vercel project ID for app.diiirect.com
+#   - VERCEL_PROJECT_ID_WWW: Vercel project ID for www.diiirect.com
+#   - SUPABASE_ACCESS_TOKEN: Supabase CLI auth (account-level)
+#   - SUPABASE_DB_PASSWORD: Production database password for migrations
+#   - SUPABASE_STAGING_DB_PASSWORD: Staging persistent branch database password
+#
+# REQUIRED VARIABLES:
+#   - TURBO_TEAM: Turborepo team slug
+#   - VERCEL_ORG_ID: Vercel organization/team ID
+#   - SUPABASE_PROJECT_ID: Production Supabase project ref
+#   - SUPABASE_STAGING_PROJECT_ID: Staging persistent branch ref
+#
+# =============================================================================
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Only one release pipeline at a time - queue, don't cancel
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+  TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+  NODE_OPTIONS: '--max-old-space-size=4096'
+
+jobs:
+  # ===========================================================================
+  # VALIDATE - Code quality checks (lint + type-check only)
+  # ===========================================================================
+  # Build is skipped here because the deploy jobs below handle building with
+  # real environment variables via `vercel build`. This avoids building twice.
+  validate:
+    name: Validate
+    uses: ./.github/workflows/_validate.yml
+    with:
+      skip_build: true
+      skip_tests: true
+    secrets:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+
+  # ===========================================================================
+  # DETECT CHANGES - Determine what needs to be deployed
+  # ===========================================================================
+  detect-changes:
+    name: Detect Changes
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    outputs:
+      webapp: ${{ steps.apps.outputs.webapp }}
+      www: ${{ steps.apps.outputs.www }}
+      supabase-migrations: ${{ steps.supabase.outputs.migrations }}
+      supabase-functions: ${{ steps.supabase.outputs.functions }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 2
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check app changes (Turborepo-aware)
+        id: apps
+        run: |
+          # turbo-ignore exits 0 = no changes (skip), 1 = has changes (deploy)
+
+          echo "Checking webapp..."
+          if pnpm exec turbo-ignore webapp --fallback=HEAD~1; then
+            echo "webapp=false" >> $GITHUB_OUTPUT
+            echo "  → No changes detected"
+          else
+            echo "webapp=true" >> $GITHUB_OUTPUT
+            echo "  → Changes detected, will deploy"
+          fi
+
+          echo "Checking www..."
+          if pnpm exec turbo-ignore www --fallback=HEAD~1; then
+            echo "www=false" >> $GITHUB_OUTPUT
+            echo "  → No changes detected"
+          else
+            echo "www=true" >> $GITHUB_OUTPUT
+            echo "  → Changes detected, will deploy"
+          fi
+
+      - name: Check Supabase changes
+        id: supabase
+        run: |
+          CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
+
+          echo "Checking supabase/migrations..."
+          if echo "$CHANGED_FILES" | grep -q '^supabase/migrations/'; then
+            echo "migrations=true" >> $GITHUB_OUTPUT
+            echo "  → Migration changes detected"
+          else
+            echo "migrations=false" >> $GITHUB_OUTPUT
+            echo "  → No migration changes"
+          fi
+
+          echo "Checking supabase/functions..."
+          if echo "$CHANGED_FILES" | grep -q '^supabase/functions/'; then
+            echo "functions=true" >> $GITHUB_OUTPUT
+            echo "  → Function changes detected"
+          else
+            echo "functions=false" >> $GITHUB_OUTPUT
+            echo "  → No function changes"
+          fi
+
+      - name: Summary of changes
+        env:
+          WEBAPP: ${{ steps.apps.outputs.webapp }}
+          WWW: ${{ steps.apps.outputs.www }}
+          MIGRATIONS: ${{ steps.supabase.outputs.migrations }}
+          FUNCTIONS: ${{ steps.supabase.outputs.functions }}
+        run: |
+          echo "### Changes Detected" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Component | Changed |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|---------|" >> $GITHUB_STEP_SUMMARY
+          echo "| webapp | $([[ $WEBAPP == 'true' ]] && echo '✅ Yes' || echo '➖ No') |" >> $GITHUB_STEP_SUMMARY
+          echo "| www | $([[ $WWW == 'true' ]] && echo '✅ Yes' || echo '➖ No') |" >> $GITHUB_STEP_SUMMARY
+          echo "| Supabase Migrations | $([[ $MIGRATIONS == 'true' ]] && echo '✅ Yes' || echo '➖ No') |" >> $GITHUB_STEP_SUMMARY
+          echo "| Supabase Functions | $([[ $FUNCTIONS == 'true' ]] && echo '✅ Yes' || echo '➖ No') |" >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # DEPLOY WEBAPP - Build and deploy prebuilt artifacts to Vercel
+  # ===========================================================================
+  # Builds the webapp using `vercel build` with real production env vars pulled
+  # from Vercel, then uploads prebuilt artifacts. Vercel never runs its own build.
+  deploy-webapp:
+    name: Deploy Webapp
+    needs: [validate, detect-changes]
+    if: needs.detect-changes.outputs.webapp == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_WEBAPP }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Vercel CLI
+        run: npm install --global vercel@latest
+
+      - name: Pull Vercel Environment Information
+        run: vercel pull --yes --environment=production --token=${{ secrets.TURBO_TOKEN }}
+
+      - name: Build Project Artifacts
+        env:
+          NODE_OPTIONS: '--max-old-space-size=6144'
+        run: vercel build --prod --token=${{ secrets.TURBO_TOKEN }}
+
+      - name: Deploy to Vercel
+        id: deploy
+        run: |
+          DEPLOY_URL=$(vercel deploy --prebuilt --prod --token=${{ secrets.TURBO_TOKEN }})
+          echo "url=$DEPLOY_URL" >> $GITHUB_OUTPUT
+          echo "Deployed webapp to: $DEPLOY_URL"
+
+  # ===========================================================================
+  # DEPLOY WWW - Build and deploy prebuilt artifacts to Vercel
+  # ===========================================================================
+  deploy-www:
+    name: Deploy WWW
+    needs: [validate, detect-changes]
+    if: needs.detect-changes.outputs.www == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_WWW }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Vercel CLI
+        run: npm install --global vercel@latest
+
+      - name: Pull Vercel Environment Information
+        run: vercel pull --yes --environment=production --token=${{ secrets.TURBO_TOKEN }}
+
+      - name: Build Project Artifacts
+        run: vercel build --prod --token=${{ secrets.TURBO_TOKEN }}
+
+      - name: Deploy to Vercel
+        id: deploy
+        run: |
+          DEPLOY_URL=$(vercel deploy --prebuilt --prod --token=${{ secrets.TURBO_TOKEN }})
+          echo "url=$DEPLOY_URL" >> $GITHUB_OUTPUT
+          echo "Deployed www to: $DEPLOY_URL"
+
+  # ===========================================================================
+  # DEPLOY STAGING SUPABASE - Safety gate before production
+  # ===========================================================================
+  # Deploys migrations and Edge Functions to the staging Supabase persistent
+  # branch BEFORE production. If this fails, production deploy is blocked.
+  deploy-staging-supabase:
+    name: Deploy Staging Supabase
+    needs: [validate, detect-changes]
+    if: |
+      always() &&
+      needs.validate.result == 'success' &&
+      (needs.detect-changes.outputs.supabase-migrations == 'true' ||
+       needs.detect-changes.outputs.supabase-functions == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    outputs:
+      migrations-result: ${{ steps.migrations.outcome }}
+      functions-result: ${{ steps.functions.outcome }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@b60b5899c73b63a2d2d651b1e90db8d4c9392f51 # v1
+        with:
+          version: latest
+
+      - name: Link to staging branch
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          PROJECT_ID: ${{ vars.SUPABASE_STAGING_PROJECT_ID }}
+        run: |
+          if [ -z "$PROJECT_ID" ]; then
+            echo "::error::SUPABASE_STAGING_PROJECT_ID not configured — staging is required before production Supabase deploy. Use manual deploy workflows for emergencies."
+            exit 1
+          fi
+          supabase link --project-ref "$PROJECT_ID"
+
+      - name: Push migrations to staging
+        id: migrations
+        if: needs.detect-changes.outputs.supabase-migrations == 'true' && vars.SUPABASE_STAGING_PROJECT_ID != ''
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_STAGING_DB_PASSWORD }}
+        run: |
+          echo "Pushing migrations to staging..."
+          supabase db push
+          echo "Staging migrations deployed successfully"
+
+      - name: Deploy Edge Functions to staging
+        id: functions
+        if: needs.detect-changes.outputs.supabase-functions == 'true' && vars.SUPABASE_STAGING_PROJECT_ID != ''
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          echo "Deploying Edge Functions to staging..."
+          supabase functions deploy
+          echo "Staging Edge Functions deployed successfully"
+
+  # ===========================================================================
+  # DEPLOY SUPABASE - Production Migrations and Edge Functions
+  # ===========================================================================
+  # Only runs after staging deploy succeeds (safety gate).
+  deploy-supabase:
+    name: Deploy to Supabase
+    needs: [validate, detect-changes, deploy-staging-supabase]
+    if: |
+      always() &&
+      needs.validate.result == 'success' &&
+      (needs.deploy-staging-supabase.result == 'success' || needs.deploy-staging-supabase.result == 'skipped') &&
+      (needs.detect-changes.outputs.supabase-migrations == 'true' ||
+       needs.detect-changes.outputs.supabase-functions == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@b60b5899c73b63a2d2d651b1e90db8d4c9392f51 # v1
+        with:
+          version: latest
+
+      - name: Link to Supabase project
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          PROJECT_ID: ${{ vars.SUPABASE_PROJECT_ID }}
+        run: |
+          if [ -z "$PROJECT_ID" ]; then
+            echo "::error::SUPABASE_PROJECT_ID variable not configured"
+            exit 1
+          fi
+          supabase link --project-ref "$PROJECT_ID"
+
+      - name: Deploy migrations
+        if: needs.detect-changes.outputs.supabase-migrations == 'true'
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: |
+          echo "Pushing database migrations..."
+          supabase db push
+          echo "Migrations deployed successfully"
+
+      - name: Deploy Edge Functions
+        if: needs.detect-changes.outputs.supabase-functions == 'true'
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          echo "Deploying Edge Functions..."
+          supabase functions deploy
+          echo "Edge Functions deployed successfully"
+
+  # ===========================================================================
+  # RELEASE - Create GitHub Release with semantic-release
+  # ===========================================================================
+  release:
+    name: Create Release
+    needs: [validate, detect-changes, deploy-webapp, deploy-www, deploy-staging-supabase, deploy-supabase]
+    # Run if validation passed and deploys succeeded or were skipped
+    if: |
+      always() &&
+      needs.validate.result == 'success' &&
+      (needs.deploy-webapp.result == 'success' || needs.deploy-webapp.result == 'skipped') &&
+      (needs.deploy-www.result == 'success' || needs.deploy-www.result == 'skipped') &&
+      (needs.deploy-staging-supabase.result == 'success' || needs.deploy-staging-supabase.result == 'skipped') &&
+      (needs.deploy-supabase.result == 'success' || needs.deploy-supabase.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+
+    outputs:
+      new_release: ${{ steps.semantic.outputs.new_release_published }}
+      version: ${{ steps.semantic.outputs.new_release_version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Create release
+        id: semantic
+        uses: cycjimmy/semantic-release-action@b12c8f6015dc215fe37bc154d4ad456dd3833c90 # v6
+        with:
+          extra_plugins: |
+            @semantic-release/changelog
+            @semantic-release/git
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Release summary
+        env:
+          NEW_RELEASE: ${{ steps.semantic.outputs.new_release_published }}
+          VERSION: ${{ steps.semantic.outputs.new_release_version }}
+        run: |
+          echo "### Release" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "$NEW_RELEASE" = "true" ]; then
+            echo "**Version:** v$VERSION" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Desktop and mobile builds have been triggered." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No release created - commits don't warrant a version bump." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "To trigger a release, use conventional commits:" >> $GITHUB_STEP_SUMMARY
+            echo "- \`feat: ...\` for features (minor)" >> $GITHUB_STEP_SUMMARY
+            echo "- \`fix: ...\` for bug fixes (patch)" >> $GITHUB_STEP_SUMMARY
+            echo "- \`feat!: ...\` for breaking changes (major)" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # ===========================================================================
+  # SUMMARY - Final pipeline results
+  # ===========================================================================
+  summary:
+    name: Pipeline Summary
+    needs: [validate, detect-changes, deploy-webapp, deploy-www, deploy-staging-supabase, deploy-supabase, release]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Generate summary
+        env:
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          DETECT_RESULT: ${{ needs.detect-changes.result }}
+          WEBAPP_DEPLOY_RESULT: ${{ needs.deploy-webapp.result }}
+          WWW_DEPLOY_RESULT: ${{ needs.deploy-www.result }}
+          STAGING_SUPABASE_RESULT: ${{ needs.deploy-staging-supabase.result }}
+          SUPABASE_RESULT: ${{ needs.deploy-supabase.result }}
+          RELEASE_RESULT: ${{ needs.release.result }}
+          NEW_RELEASE: ${{ needs.release.outputs.new_release }}
+          VERSION: ${{ needs.release.outputs.version }}
+          WEBAPP_CHANGED: ${{ needs.detect-changes.outputs.webapp }}
+          WWW_CHANGED: ${{ needs.detect-changes.outputs.www }}
+          MIGRATIONS_CHANGED: ${{ needs.detect-changes.outputs.supabase-migrations }}
+          FUNCTIONS_CHANGED: ${{ needs.detect-changes.outputs.supabase-functions }}
+        run: |
+          echo "## Release Pipeline Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Validation status
+          echo "### Validation" >> $GITHUB_STEP_SUMMARY
+          if [ "$VALIDATE_RESULT" = "success" ]; then
+            echo "✅ All checks passed (lint, type-check)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Validation failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Deployments table
+          echo "### Deployments" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Target | Changed | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|---------|--------|" >> $GITHUB_STEP_SUMMARY
+
+          # webapp
+          if [ "$WEBAPP_CHANGED" = "true" ]; then
+            if [ "$WEBAPP_DEPLOY_RESULT" = "success" ]; then
+              echo "| webapp | ✅ Yes | 🚀 Built + Deployed |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| webapp | ✅ Yes | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "| webapp | ➖ No | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # www
+          if [ "$WWW_CHANGED" = "true" ]; then
+            if [ "$WWW_DEPLOY_RESULT" = "success" ]; then
+              echo "| www | ✅ Yes | 🚀 Built + Deployed |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| www | ✅ Yes | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "| www | ➖ No | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Staging Supabase
+          if [ "$MIGRATIONS_CHANGED" = "true" ] || [ "$FUNCTIONS_CHANGED" = "true" ]; then
+            if [ "$STAGING_SUPABASE_RESULT" = "success" ]; then
+              echo "| Staging Supabase | ✅ Yes | 🚀 Deployed |" >> $GITHUB_STEP_SUMMARY
+            elif [ "$STAGING_SUPABASE_RESULT" = "skipped" ]; then
+              echo "| Staging Supabase | ✅ Yes | ⏭️ Skipped (not configured) |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| Staging Supabase | ✅ Yes | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "| Staging Supabase | ➖ No | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Supabase migrations (production)
+          if [ "$MIGRATIONS_CHANGED" = "true" ]; then
+            if [ "$SUPABASE_RESULT" = "success" ]; then
+              echo "| Supabase Migrations | ✅ Yes | 🚀 Deployed |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| Supabase Migrations | ✅ Yes | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "| Supabase Migrations | ➖ No | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Supabase functions (production)
+          if [ "$FUNCTIONS_CHANGED" = "true" ]; then
+            if [ "$SUPABASE_RESULT" = "success" ]; then
+              echo "| Supabase Functions | ✅ Yes | 🚀 Deployed |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| Supabase Functions | ✅ Yes | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "| Supabase Functions | ➖ No | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Release status
+          echo "### Release" >> $GITHUB_STEP_SUMMARY
+          if [ "$NEW_RELEASE" = "true" ]; then
+            echo "✅ **v$VERSION** published" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Triggered builds:" >> $GITHUB_STEP_SUMMARY
+            echo "- 🖥️ Desktop (macOS, Windows, Linux)" >> $GITHUB_STEP_SUMMARY
+            echo "- 📱 Mobile (iOS, Android)" >> $GITHUB_STEP_SUMMARY
+          elif [ "$RELEASE_RESULT" = "success" ]; then
+            echo "➖ No release needed (no releasable commits)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Release failed" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Fail if critical jobs failed
+        env:
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          WEBAPP_DEPLOY_RESULT: ${{ needs.deploy-webapp.result }}
+          WWW_DEPLOY_RESULT: ${{ needs.deploy-www.result }}
+          STAGING_SUPABASE_RESULT: ${{ needs.deploy-staging-supabase.result }}
+          SUPABASE_RESULT: ${{ needs.deploy-supabase.result }}
+        run: |
+          if [ "$VALIDATE_RESULT" != "success" ]; then
+            echo "::error::Validation failed"
+            exit 1
+          fi
+
+          if [ "$WEBAPP_DEPLOY_RESULT" = "failure" ]; then
+            echo "::error::Webapp build+deploy failed"
+            exit 1
+          fi
+
+          if [ "$WWW_DEPLOY_RESULT" = "failure" ]; then
+            echo "::error::WWW build+deploy failed"
+            exit 1
+          fi
+
+          if [ "$STAGING_SUPABASE_RESULT" = "failure" ]; then
+            echo "::error::Staging Supabase deployment failed"
+            exit 1
+          fi
+
+          if [ "$SUPABASE_RESULT" = "failure" ]; then
+            echo "::error::Supabase deployment failed"
+            exit 1
+          fi

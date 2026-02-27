@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # ClaudeMix — merge-queue.sh
 # Consolidate multiple session branches into a single PR.
 # Reduces CI churn when many Claude sessions work in parallel.
@@ -134,8 +135,10 @@ merge_queue_run() {
       [[ "$f" == "$branch" ]] && is_failed=true && break
     done
     if $is_failed; then
+      # shellcheck disable=SC2016 # Backticks are literal markdown, not command substitution
       pr_body+="$(printf -- '- ❌ `%s` (conflict — skipped)\n' "$branch")"
     else
+      # shellcheck disable=SC2016 # Backticks are literal markdown
       pr_body+="$(printf -- '- ✅ `%s`\n' "$branch")"
     fi
   done
@@ -143,6 +146,7 @@ merge_queue_run() {
   if (( ${#failed[@]} > 0 )); then
     pr_body+="$(printf '\n### Skipped (conflicts)\n\nThese branches had conflicts and need manual resolution:\n\n')"
     for branch in "${failed[@]}"; do
+      # shellcheck disable=SC2016 # Backticks are literal markdown
       pr_body+="$(printf -- '- `%s`\n' "$branch")"
     done
   fi

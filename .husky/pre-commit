@@ -1,0 +1,4 @@
+bash -n bin/claudemix
+for f in lib/*.sh; do
+  bash -n "$f" || exit 1
+done
