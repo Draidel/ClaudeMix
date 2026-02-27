@@ -1,0 +1,8 @@
+# ShellCheck configuration for ClaudeMix
+# https://github.com/koalaman/shellcheck/wiki/Directive
+
+# Allow sourced files to reference each other's variables
+source-path=lib
+
+# Default shell is bash
+shell=bash
