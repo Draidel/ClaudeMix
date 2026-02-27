@@ -39,6 +39,12 @@ fi
 # ── Install / Update ─────────────────────────────────────────────────────────
 
 if [[ -d "$INSTALL_DIR" ]]; then
+  # Validate this looks like a ClaudeMix installation before any destructive ops
+  if [[ ! -f "$INSTALL_DIR/bin/claudemix" ]] && [[ ! -d "$INSTALL_DIR/.git" ]]; then
+    error "Directory '$INSTALL_DIR' exists but doesn't look like a ClaudeMix installation."
+    error "Set CLAUDEMIX_HOME to a different path or remove the directory manually."
+    exit 1
+  fi
   info "Updating existing installation at $INSTALL_DIR"
   if ! (cd "$INSTALL_DIR" && git pull --quiet origin main); then
     warn "Git pull failed. Reinstalling..."

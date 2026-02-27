@@ -255,12 +255,12 @@ _session_save_meta() {
   local wt_path="$2"
   local meta_file="$PROJECT_ROOT/$CLAUDEMIX_SESSIONS_DIR/${name}.meta"
 
-  cat > "$meta_file" << EOF
-name=$name
-created_at=$(now_iso)
-branch=${CLAUDEMIX_BRANCH_PREFIX}${name}
-worktree=$wt_path
-tmux_session=${CLAUDEMIX_TMUX_PREFIX}${name}
-base_branch=$CFG_BASE_BRANCH
-EOF
+  {
+    printf 'name=%s\n' "$name"
+    printf 'created_at=%s\n' "$(now_iso)"
+    printf 'branch=%s\n' "${CLAUDEMIX_BRANCH_PREFIX}${name}"
+    printf 'worktree=%s\n' "$wt_path"
+    printf 'tmux_session=%s\n' "${CLAUDEMIX_TMUX_PREFIX}${name}"
+    printf 'base_branch=%s\n' "$CFG_BASE_BRANCH"
+  } > "$meta_file"
 }

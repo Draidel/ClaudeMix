@@ -77,6 +77,12 @@ merge_queue_run() {
   # Trap to restore original branch on failure
   trap '_merge_queue_restore_branch "$original_branch" "$merge_branch"' EXIT
 
+  # Safety: refuse to proceed if the working tree is dirty
+  if ! git -C "$PROJECT_ROOT" diff --quiet 2>/dev/null || \
+     ! git -C "$PROJECT_ROOT" diff --cached --quiet 2>/dev/null; then
+    die "Working tree has uncommitted changes. Commit or stash them first."
+  fi
+
   log_info "Creating consolidated branch ${CYAN}$merge_branch${RESET} from ${CYAN}$CFG_MERGE_TARGET${RESET}"
 
   git -C "$PROJECT_ROOT" checkout "$CFG_MERGE_TARGET" --quiet 2>/dev/null

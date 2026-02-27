@@ -64,13 +64,20 @@ worktree_remove() {
     log_debug "Worktree not found: $worktree_path"
     return 0
   fi
-  # Safety: ensure path is inside the expected directory
-  case "$worktree_path" in
-    "$PROJECT_ROOT/$CFG_WORKTREE_DIR/"*)
-      : # Valid path
+
+  # Safety: resolve real path and ensure it's inside the project root
+  local real_path real_root
+  real_path="$(cd "$worktree_path" 2>/dev/null && pwd -P)" || {
+    log_error "Cannot resolve worktree path: $worktree_path"
+    return 1
+  }
+  real_root="$(cd "$PROJECT_ROOT" 2>/dev/null && pwd -P)"
+  case "$real_path" in
+    "$real_root/"*)
+      : # Valid — resolved path is inside project root
       ;;
     *)
-      log_error "Refusing to remove path outside worktree directory: $worktree_path"
+      log_error "Refusing to remove path outside project root: $real_path"
       return 1
       ;;
   esac
@@ -169,8 +176,8 @@ worktree_cleanup_merged() {
 
     # Use exact line match (grep -xF) to avoid substring false positives
     if printf '%s\n' "$merged_branches" | grep -qxF "$branch"; then
-      log_info "Branch ${CYAN}$branch${RESET} is merged into ${CYAN}$CFG_MERGE_TARGET${RESET}"
-      worktree_remove "$name"
+      log_info "Branch ${CYAN}$branch${RESET} is merged into ${CYAN}$CFG_MERGE_TARGET${RESET}" >&2
+      worktree_remove "$name" >&2
       removed=$((removed + 1))
     fi
   done
