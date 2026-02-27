@@ -21,5 +21,9 @@ merge_strategy: squash
 # New sessions branch off from this.
 base_branch: staging
 
+# Directory for worktrees (relative to project root).
+# Default: .claudemix/worktrees
+worktree_dir: .claudemix/worktrees
+
 # Extra flags to pass to Claude Code on every session launch.
 claude_flags: --dangerously-skip-permissions --verbose

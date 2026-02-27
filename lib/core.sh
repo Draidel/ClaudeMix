@@ -147,6 +147,7 @@ load_config() {
   done < "$config_path"
 
   _detect_defaults
+  _validate_config
 }
 
 # Auto-detect sensible defaults for unset config values.
@@ -204,21 +205,75 @@ _detect_defaults() {
   fi
 }
 
+# Validate all CFG_* values after loading. Prevents injection attacks.
+_validate_config() {
+  # Validate branch names: must be safe git ref characters, no leading dash
+  local branch_pattern='^[a-zA-Z0-9][a-zA-Z0-9_./-]*$'
+  if [[ -n "$CFG_BASE_BRANCH" ]] && ! [[ "$CFG_BASE_BRANCH" =~ $branch_pattern ]]; then
+    log_warn "Unsafe base_branch '${CFG_BASE_BRANCH}' in config — using default"
+    CFG_BASE_BRANCH=""
+  fi
+  if [[ -n "$CFG_MERGE_TARGET" ]] && ! [[ "$CFG_MERGE_TARGET" =~ $branch_pattern ]]; then
+    log_warn "Unsafe merge_target '${CFG_MERGE_TARGET}' in config — using default"
+    CFG_MERGE_TARGET=""
+  fi
+
+  # Validate worktree_dir: no path traversal (..), no leading slash, no leading dash
+  if [[ -n "$CFG_WORKTREE_DIR" ]]; then
+    if [[ "$CFG_WORKTREE_DIR" == *".."* ]] || [[ "$CFG_WORKTREE_DIR" == /* ]] || [[ "$CFG_WORKTREE_DIR" == -* ]]; then
+      log_warn "Unsafe worktree_dir '${CFG_WORKTREE_DIR}' in config — using default"
+      CFG_WORKTREE_DIR=""
+    fi
+  fi
+
+  # Validate merge_strategy: must be one of the known values
+  case "$CFG_MERGE_STRATEGY" in
+    squash|merge|rebase) ;;
+    *)
+      log_warn "Unknown merge_strategy '${CFG_MERGE_STRATEGY}' in config — using 'squash'"
+      CFG_MERGE_STRATEGY="squash"
+      ;;
+  esac
+
+  # Validate CFG_VALIDATE: reject dangerous shell metacharacters
+  if [[ -n "$CFG_VALIDATE" ]]; then
+    if [[ "$CFG_VALIDATE" == *'$('* ]] || [[ "$CFG_VALIDATE" == *'`'* ]] \
+      || [[ "$CFG_VALIDATE" == *';'* ]] || [[ "$CFG_VALIDATE" == *'|'* ]] \
+      || [[ "$CFG_VALIDATE" == *'>'* ]] || [[ "$CFG_VALIDATE" == *'<'* ]] \
+      || [[ "$CFG_VALIDATE" == *$'\n'* ]]; then
+      log_warn "Unsafe characters in validate config — rejecting"
+      log_warn "  Rejected value: ${CFG_VALIDATE}"
+      log_warn "  Allowed: simple commands like 'npm test' or 'cargo check && cargo clippy'"
+      CFG_VALIDATE=""
+    fi
+  fi
+
+  # Validate protected_branches: same as branch names but comma-separated
+  if [[ -n "$CFG_PROTECTED_BRANCHES" ]]; then
+    local cleaned
+    cleaned="$(printf '%s' "$CFG_PROTECTED_BRANCHES" | tr -cd 'a-zA-Z0-9,_./-')"
+    if [[ "$cleaned" != "$CFG_PROTECTED_BRANCHES" ]]; then
+      log_warn "Sanitized protected_branches config value"
+      CFG_PROTECTED_BRANCHES="$cleaned"
+    fi
+  fi
+}
+
 # Write default config to a file.
 # Args: $1 = output path
 write_default_config() {
   local config_path="$1"
-  cat > "$config_path" << EOF
-# ClaudeMix configuration
-# https://github.com/Draidel/ClaudeMix
-
-validate: ${CFG_VALIDATE:-npm test}
-protected_branches: ${CFG_PROTECTED_BRANCHES}
-merge_target: ${CFG_MERGE_TARGET}
-merge_strategy: ${CFG_MERGE_STRATEGY}
-base_branch: ${CFG_BASE_BRANCH}
-claude_flags: ${CFG_CLAUDE_FLAGS}
-EOF
+  {
+    printf '# ClaudeMix configuration\n'
+    printf '# https://github.com/Draidel/ClaudeMix\n\n'
+    printf 'validate: %s\n' "${CFG_VALIDATE:-npm test}"
+    printf 'protected_branches: %s\n' "${CFG_PROTECTED_BRANCHES}"
+    printf 'merge_target: %s\n' "${CFG_MERGE_TARGET}"
+    printf 'merge_strategy: %s\n' "${CFG_MERGE_STRATEGY}"
+    printf 'base_branch: %s\n' "${CFG_BASE_BRANCH}"
+    printf 'claude_flags: %s\n' "${CFG_CLAUDE_FLAGS}"
+    printf 'worktree_dir: %s\n' "${CFG_WORKTREE_DIR}"
+  } > "$config_path"
 }
 
 # ── Dependency Checks ────────────────────────────────────────────────────────
