@@ -360,6 +360,10 @@ PRs welcome. Please follow existing code style (shellcheck-clean bash).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for full guidelines.
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Draidel/ClaudeMix&type=date&legend=top-left)](https://www.star-history.com/#Draidel/ClaudeMix&type=date&legend=top-left)
+
 ## License
 
 [MIT](LICENSE)
