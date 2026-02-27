@@ -237,6 +237,7 @@ _validate_config() {
 
   # Validate CFG_VALIDATE: reject dangerous shell metacharacters
   if [[ -n "$CFG_VALIDATE" ]]; then
+    # shellcheck disable=SC2016 # Matching literal $( and ` characters, not expanding
     if [[ "$CFG_VALIDATE" == *'$('* ]] || [[ "$CFG_VALIDATE" == *'`'* ]] \
       || [[ "$CFG_VALIDATE" == *';'* ]] || [[ "$CFG_VALIDATE" == *'|'* ]] \
       || [[ "$CFG_VALIDATE" == *'>'* ]] || [[ "$CFG_VALIDATE" == *'<'* ]] \
