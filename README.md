@@ -1,121 +1,144 @@
-# ClaudeMix
+<p align="center">
+  <h1 align="center">ClaudeMix</h1>
+  <p align="center">
+    Multi-session orchestrator for <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>
+    <br />
+    Run parallel Claude sessions with full isolation, lifecycle management, and a merge queue.
+    <br />
+    <br />
+    <a href="#install">Install</a>
+    &middot;
+    <a href="#quick-start">Quick Start</a>
+    &middot;
+    <a href="#commands">Commands</a>
+    &middot;
+    <a href="#configuration">Configuration</a>
+    &middot;
+    <a href="#how-it-works">How It Works</a>
+  </p>
+</p>
 
-Multi-session orchestrator for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Run multiple Claude instances in parallel with proper isolation, lifecycle management, and work consolidation.
+<br />
 
-## The Problem
+## Why ClaudeMix?
 
-Claude Code is single-session by design. Power users running 5-10+ sessions simultaneously hit:
+Claude Code is single-session by design. When you run 5-10+ sessions simultaneously, things break:
 
-- **File conflicts** — sessions overwrite each other's work
-- **Branch chaos** — `git checkout` in one session breaks another
-- **CI churn** — 8 sessions = 8 PRs = 8 CI runs = wasted time
-- **Session blindness** — no way to see what's running or manage it
+| Problem | What happens |
+|---------|-------------|
+| **File conflicts** | Sessions overwrite each other's work |
+| **Branch chaos** | `git checkout` in one session breaks another |
+| **CI churn** | 8 sessions = 8 PRs = 8 CI runs = wasted compute |
+| **Session blindness** | No visibility into what's running or where |
 
-## The Solution
+ClaudeMix solves all of this with one command:
 
-ClaudeMix adds the orchestration layer:
-
+```bash
+claudemix auth-fix       # Isolated worktree + branch + tmux + Claude
+claudemix ui-update      # Another one, fully parallel
+claudemix ls             # See everything at a glance
+claudemix merge          # Bundle finished work into a single PR
 ```
-claudemix auth-fix       # Isolated session in its own worktree + tmux
-claudemix ui-update      # Another isolated session, running in parallel
-claudemix ls             # See what's running
-claudemix merge          # Bundle finished work into one PR
-```
 
-Each session gets its own git worktree (isolated files), its own branch (`claudemix/<name>`), and optionally its own tmux session (persistence). Git hooks prevent broken code from reaching CI.
+Every session gets its own git worktree (isolated files), its own branch (`claudemix/<name>`), and optionally its own tmux session (persistence). No conflicts. No chaos.
 
 ## Install
 
-```bash
-# Homebrew (recommended)
-brew install draidel/claudemix/claudemix
+### Homebrew (recommended)
 
-# Or clone and add to PATH
+```bash
+brew install draidel/claudemix/claudemix
+```
+
+### curl installer
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Draidel/ClaudeMix/main/install.sh | bash
+```
+
+### Manual
+
+```bash
 git clone https://github.com/Draidel/ClaudeMix.git ~/.claudemix
 echo 'export PATH="$HOME/.claudemix/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
-
-# Or use the installer
-curl -sSL https://raw.githubusercontent.com/Draidel/ClaudeMix/main/install.sh | bash
 ```
 
 ### Dependencies
 
 | Dependency | Required | Purpose | Install |
 |-----------|----------|---------|---------|
-| [git](https://git-scm.com/) | Yes | Worktree management | Pre-installed on most systems |
-| [claude](https://docs.anthropic.com/en/docs/claude-code) | Yes | AI coding sessions | `npm install -g @anthropic-ai/claude-code` |
-| [tmux](https://github.com/tmux/tmux) | No | Session persistence (recommended) | `brew install tmux` / `apt install tmux` |
+| [git](https://git-scm.com/) 2.17+ | **Yes** | Worktree management | Pre-installed on most systems |
+| [claude](https://docs.anthropic.com/en/docs/claude-code) | **Yes** | AI coding sessions | `npm i -g @anthropic-ai/claude-code` |
+| [tmux](https://github.com/tmux/tmux) | No | Session persistence | `brew install tmux` / `apt install tmux` |
 | [gum](https://github.com/charmbracelet/gum) | No | Interactive TUI menus | `brew install gum` / [install guide](https://github.com/charmbracelet/gum#installation) |
-| [gh](https://cli.github.com/) | No | Merge queue PR creation | `brew install gh` / [install guide](https://cli.github.com/) |
-
-### Supported Platforms
-
-| Platform | Status | Notes |
-|----------|--------|-------|
-| macOS (Apple Silicon) | Fully tested | Primary development platform |
-| macOS (Intel) | Fully tested | |
-| Linux (Ubuntu/Debian) | Supported | Tested on Ubuntu 22.04+ |
-| Linux (Fedora/RHEL) | Supported | |
-| WSL 2 (Windows) | Supported | Requires bash 4+ |
-| Native Windows | Not supported | Use WSL 2 |
+| [gh](https://cli.github.com/) | No | PR creation in merge queue | `brew install gh` / [install guide](https://cli.github.com/) |
 
 **Requirements**: bash 4.0+, git 2.17+ (worktree support)
+
+### Platform Support
+
+| Platform | Status |
+|----------|--------|
+| macOS (Apple Silicon / Intel) | Fully tested |
+| Linux (Ubuntu, Debian, Fedora, RHEL) | Supported |
+| WSL 2 | Supported (bash 4+) |
+| Native Windows | Not supported — use WSL 2 |
 
 ## Quick Start
 
 ```bash
-# In any git project
-cd my-project
+cd my-project                      # Any git repository
 
-# Generate config (auto-detects your setup)
-claudemix init
+claudemix init                     # Generate config (auto-detects your stack)
+claudemix hooks install            # Install pre-commit + pre-push hooks
 
-# Install git hooks (pre-commit lint + pre-push validation)
-claudemix hooks install
+claudemix auth-fix                 # Session 1: isolated worktree + Claude
+claudemix ui-update                # Session 2: another parallel session
+claudemix api-refactor             # Session 3: and another
 
-# Start working
-claudemix auth-fix          # Creates worktree + launches Claude
-claudemix ui-update         # Another parallel session
-claudemix ls                # See active sessions
-claudemix merge             # Consolidate into one PR when done
-claudemix cleanup           # Remove merged worktrees
+claudemix ls                       # See all active sessions
+claudemix kill auth-fix            # Done with one? Kill it (branch kept)
+claudemix merge                    # Consolidate branches into one PR
+claudemix cleanup                  # Remove merged worktrees
 ```
 
 ## Commands
 
 ### Sessions
 
-| Command | Description |
-|---------|-------------|
-| `claudemix` | Interactive TUI menu |
-| `claudemix <name>` | Create or attach to a named session |
-| `claudemix <name> [flags]` | Create session with extra Claude flags |
-| `claudemix ls` | List active sessions with status |
-| `claudemix kill <name>` | Kill a session (keeps branch for merge) |
-| `claudemix kill all` | Kill all sessions |
+```
+claudemix                          Interactive TUI menu
+claudemix <name>                   Create or attach to a named session
+claudemix <name> [claude-flags]    Create session with extra Claude flags
+claudemix ls                       List active sessions with status
+claudemix kill <name>              Kill a session (keeps branch for merge)
+claudemix kill all                 Kill all sessions
+```
 
 ### Merge Queue
 
-| Command | Description |
-|---------|-------------|
-| `claudemix merge` | Select branches and consolidate into one PR |
-| `claudemix merge list` | Show branches eligible for merge |
+```
+claudemix merge                    Select branches → consolidate → create PR
+claudemix merge list               Show branches eligible for merge
+```
 
 ### Maintenance
 
-| Command | Description |
-|---------|-------------|
-| `claudemix cleanup` | Remove worktrees for merged branches |
-| `claudemix hooks install` | Install pre-commit + pre-push hooks |
-| `claudemix hooks uninstall` | Remove ClaudeMix hooks |
-| `claudemix hooks status` | Show current hook status |
-| `claudemix init` | Generate `.claudemix.yml` config |
+```
+claudemix cleanup                  Remove worktrees for merged branches
+claudemix hooks install            Install pre-commit + pre-push hooks
+claudemix hooks uninstall          Remove ClaudeMix hooks
+claudemix hooks status             Show current hook status
+claudemix init                     Generate .claudemix.yml config
+claudemix version                  Show version
+claudemix help                     Show help
+```
 
 ### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
+| Variable | Default | Purpose |
+|----------|---------|---------|
 | `CLAUDEMIX_DEBUG` | `0` | Set to `1` for debug logging |
 | `CLAUDEMIX_HOME` | `~/.claudemix` | Override installation directory |
 | `NO_COLOR` | `0` | Set to `1` to disable colors |
@@ -127,34 +150,22 @@ claudemix cleanup           # Remove merged worktrees
 ```
 claudemix auth-fix
     │
-    ├── 1. Creates git worktree: .claudemix/worktrees/auth-fix
-    │      Branch: claudemix/auth-fix (from base branch)
+    ├── 1. Create git worktree     .claudemix/worktrees/auth-fix
+    │      New branch:             claudemix/auth-fix (from base branch)
     │
-    ├── 2. Installs dependencies (pnpm/yarn/npm — uses shared store, fast)
+    ├── 2. Install dependencies    Auto-detects pnpm/yarn/bun/npm
     │
-    ├── 3. Creates tmux session: claudemix-auth-fix
-    │      (or runs directly if tmux not available)
+    ├── 3. Create tmux session     claudemix-auth-fix
+    │      (foreground if no tmux)
     │
-    └── 4. Launches Claude Code in the worktree
-           (isolated files, isolated branch, isolated terminal)
+    └── 4. Launch Claude Code      Isolated files, branch, and terminal
 ```
 
-### Git Hooks
-
-**Pre-commit** (via husky + lint-staged for Node.js, or direct for other projects):
-- Runs ESLint on staged files only
-- ~2-5 seconds per commit
-- Auto-fixes what it can
-
-**Pre-push** (branch guard + validation):
-- Blocks direct push to protected branches (main, staging, etc.)
-- Runs your project's validate command (lint + type-check)
-- Prevents broken code from reaching CI
-- POSIX-compatible (works with any `/bin/sh`)
+Rerunning `claudemix auth-fix` attaches to the existing session instead of creating a new one.
 
 ### Merge Queue
 
-Instead of 8 PRs from 8 sessions:
+Instead of N sessions creating N PRs with N CI runs:
 
 ```
 claudemix/auth-fix       ─┐
@@ -164,15 +175,30 @@ claudemix/perf-optimize  ─┤
 claudemix/bug-fix        ─┘
 ```
 
-1. `claudemix merge` shows all session branches
-2. You select which ones to consolidate
-3. Creates a merge branch, merges selected work
-4. Runs validation on the consolidated result
-5. Creates a single PR with auto-merge enabled
+1. `claudemix merge` lists all session branches with commits ahead of target
+2. Select which branches to consolidate (interactive menu or numbered list)
+3. Creates a merge branch, merges selected work sequentially
+4. Runs your project's validation command on the result
+5. Pushes and creates a PR via `gh` with auto-merge enabled
+6. Branches that conflict are skipped and reported
+
+### Git Hooks
+
+ClaudeMix installs two hooks:
+
+**Pre-commit** — Fast feedback on staged files:
+- Node.js projects: husky + lint-staged (ESLint on changed files only)
+- Other projects: runs your linter directly
+- ~2-5 seconds per commit
+
+**Pre-push** — Gate before CI:
+- Blocks direct push to protected branches (main, staging, etc.)
+- Runs your `validate` command (lint + type-check + tests)
+- Generated hooks are POSIX `#!/bin/sh` — work everywhere
 
 ## Configuration
 
-Drop `.claudemix.yml` in your project root:
+Create `.claudemix.yml` in your project root (or run `claudemix init`):
 
 ```yaml
 # Command to validate code before push (auto-detected)
@@ -184,93 +210,77 @@ protected_branches: main,staging
 # Target branch for merge queue PRs
 merge_target: staging
 
-# Merge strategy: squash, merge, or rebase
+# Merge strategy: squash | merge | rebase
 merge_strategy: squash
 
 # Base branch for new worktrees
 base_branch: staging
 
+# Directory for worktrees (relative to project root)
+worktree_dir: .claudemix/worktrees
+
 # Extra flags for Claude Code
 claude_flags: --dangerously-skip-permissions --verbose
 ```
 
-All values are optional. ClaudeMix auto-detects defaults from:
-- `package.json` scripts (validate, lint, test) + package manager (pnpm/yarn/bun/npm)
-- `Makefile` targets (lint, check)
-- `Cargo.toml` (cargo check + clippy)
-- `go.mod` (go vet)
-- Git remote default branch
+**All values are optional.** ClaudeMix auto-detects sensible defaults:
+
+| Source | Detected |
+|--------|----------|
+| `package.json` | validate/lint/test scripts + package manager (pnpm/yarn/bun/npm) |
+| `Makefile` | lint/check targets |
+| `Cargo.toml` | `cargo check && cargo clippy` |
+| `go.mod` | `go vet ./...` |
+| Git remote | Default branch (main/master/staging/develop) |
 
 ## Architecture
 
 ```
-~/.claudemix/                    # Installation (global)
-├── bin/claudemix                # Entry point
-├── lib/
-│   ├── core.sh                  # Config, logging, utils, pkg detection
-│   ├── session.sh               # Session lifecycle (create/attach/kill)
-│   ├── worktree.sh              # Git worktree management
-│   ├── merge-queue.sh           # Branch consolidation + PR creation
-│   ├── hooks.sh                 # Git hooks installer (husky + direct)
-│   └── tui.sh                   # Interactive menus (gum + fallback)
-├── completions/                 # Shell completions (zsh + bash + fish)
-├── tests/                       # Bats test suite (unit + e2e)
-├── scripts/                     # Dev scripts (test runner)
-├── Formula/                     # Homebrew formula
-├── .github/workflows/           # CI (shellcheck + syntax + tests)
-└── install.sh                   # curl|bash installer
+bin/claudemix                Entry point (set -euo pipefail, arg parsing, routing)
+lib/
+├── core.sh                  Constants, colors, logging, YAML config, pkg detection, utils
+├── session.sh               Session CRUD: create, attach, list, kill (tmux + worktree)
+├── worktree.sh              Git worktree management: create, remove, list, cleanup
+├── merge-queue.sh           Branch consolidation: select, merge, validate, push, PR
+├── hooks.sh                 Git hooks installer (husky path + direct path)
+└── tui.sh                   Interactive menus (gum with basic prompt fallback)
+completions/                 Shell completions (bash + zsh + fish)
+tests/                       Bats test suite (unit + e2e)
+install.sh                   curl|bash installer
+Formula/                     Homebrew formula
+```
 
-my-project/                      # Per-project (gitignored)
-├── .claudemix.yml               # Project config
-└── .claudemix/
-    ├── worktrees/               # Git worktrees (one per session)
+### Per-Project Structure
+
+```
+my-project/
+├── .claudemix.yml                  Project config
+└── .claudemix/                     Session data (gitignored)
+    ├── worktrees/                  Git worktrees (one per session)
     │   ├── auth-fix/
     │   └── ui-update/
-    └── sessions/                # Session metadata files
+    └── sessions/                   Session metadata
         ├── auth-fix.meta
         └── ui-update.meta
 ```
 
-### Module Responsibilities
-
-| Module | Lines | Responsibility |
-|--------|-------|---------------|
-| `core.sh` | ~250 | Constants, colors, logging, YAML config parser, package manager detection, dependency checks, utility functions |
-| `session.sh` | ~200 | Session CRUD: create (worktree + tmux + claude), attach, list, kill. Array-based command building (no eval). |
-| `worktree.sh` | ~180 | Git worktree lifecycle: create, remove, list, cleanup merged. Path validation before rm. |
-| `merge-queue.sh` | ~190 | Branch consolidation: select branches, merge, validate, push, create PR via gh. Trap-based cleanup on error. |
-| `hooks.sh` | ~200 | Git hooks: husky path (pre-commit + lint-staged) and direct path. POSIX-compatible generated hooks. |
-| `tui.sh` | ~230 | Interactive menus via gum with graceful fallback to numbered prompts. |
-| `bin/claudemix` | ~150 | Entry point: argument parsing, routing, help. Only file with `set -euo pipefail`. |
-| `install.sh` | ~130 | Installer: clone, PATH setup, completions, dependency check. |
-
 ### Design Principles
 
-- **Zero hardcoded project knowledge** — all behavior comes from config + auto-detection
-- **Works out of the box** — sensible defaults, zero config for basic usage
-- **Shell-native** — instant startup, no runtime dependencies beyond bash 4+
-- **Graceful degradation** — works without tmux (no persistence), gum (basic prompts), or gh (no merge PRs)
-- **Composable** — use just hooks, just sessions, or just merge queue independently
-- **Security-conscious** — no eval on user input, path validation before rm, POSIX hooks, sanitized config values
-- **Cross-platform** — macOS + Linux, brew + apt install hints, BSD/GNU date handling
+- **Zero config** — works out of the box with auto-detected defaults
+- **Shell-native** — instant startup, ~2K lines of bash, no runtime dependencies
+- **Graceful degradation** — works without tmux (no persistence), gum (basic prompts), gh (no PR creation)
+- **Security-conscious** — no `eval` on user input, config validation, path guards before `rm -rf`, POSIX hooks
+- **Composable** — use sessions, hooks, or merge queue independently
+- **Cross-platform** — macOS + Linux, BSD/GNU date handling, brew + apt install hints
 
-### What ClaudeMix Is NOT
-
-- Not a Claude Code fork — it composes on top of Claude's native features
-- Not a prompt framework — that's [SuperClaude](https://github.com/SuperClaude-Org/SuperClaude_Framework)'s job
-- Not a CI/CD tool — that's GitHub Actions' job
-
-### Layer Model
+### Where ClaudeMix Fits
 
 ```
 ┌─────────────────────────────────────────────────┐
 │  Developer                                       │
 ├─────────────────────────────────────────────────┤
-│  ClaudeMix    — Session orchestration            │  ← THIS
+│  ClaudeMix    — Session orchestration            │  ◄── this
 │                 (isolation, lifecycle, merging)   │
-├─────────────────────────────────────────────────┤
-│  SuperClaude  — Prompt intelligence (optional)   │
-│                 (personas, skills, modes)         │
 ├─────────────────────────────────────────────────┤
 │  Claude Code  — AI coding runtime                │
 │                 (tools, MCP, context)             │
@@ -279,48 +289,48 @@ my-project/                      # Per-project (gitignored)
 └─────────────────────────────────────────────────┘
 ```
 
+ClaudeMix is **not** a Claude Code fork, a prompt framework, or a CI/CD tool. It's the orchestration layer between you and multiple Claude Code sessions.
+
 ## Shell Completions
 
-### Zsh
+Completions are installed automatically by `install.sh` and Homebrew.
 
+<details>
+<summary>Manual installation</summary>
+
+**Zsh**
 ```bash
-# Auto-installed by install.sh, or manually:
 mkdir -p ~/.zsh/completions
 cp ~/.claudemix/completions/claudemix.zsh ~/.zsh/completions/_claudemix
 # Add to .zshrc: fpath=(~/.zsh/completions $fpath)
 ```
 
-### Bash
-
+**Bash**
 ```bash
-source ~/.claudemix/completions/claudemix.bash
-# Or add to .bashrc
+mkdir -p ~/.local/share/bash-completion/completions
+cp ~/.claudemix/completions/claudemix.bash ~/.local/share/bash-completion/completions/claudemix
 ```
 
-### Fish
-
-```fish
-# Auto-installed by install.sh and Homebrew, or manually:
+**Fish**
+```bash
 cp ~/.claudemix/completions/claudemix.fish ~/.config/fish/completions/
 ```
 
+</details>
+
 ## Tips
 
-### Alias for faster typing
+**Alias for faster typing:**
 
 ```bash
 alias cmx="claudemix"
 ```
 
-### Working with terminal multiplexers
+**Works with any terminal setup** — Ghostty splits, iTerm2 tabs, Warp, Alacritty. Run `claudemix <name>` in each pane for fully isolated sessions.
 
-ClaudeMix works great with Ghostty splits, iTerm2 tabs, or any terminal multiplexer. Run `claudemix <name>` in each pane — each gets its own isolated worktree.
+**Without tmux** — Sessions run in the foreground (no persistence). Install tmux for background session support.
 
-### Without tmux
-
-ClaudeMix works without tmux — sessions run in the foreground (no persistence). Install tmux for session persistence: `brew install tmux` (macOS) or `apt install tmux` (Linux).
-
-### Debug mode
+**Debug mode:**
 
 ```bash
 CLAUDEMIX_DEBUG=1 claudemix ls
@@ -328,31 +338,28 @@ CLAUDEMIX_DEBUG=1 claudemix ls
 
 ## Roadmap
 
-- [ ] `claudemix status` — dashboard view with session health, branch state, and resource usage
+- [ ] `claudemix status` — dashboard with session health, branch state, resource usage
 - [ ] `claudemix log <name>` — view Claude session output history
-- [ ] `claudemix diff` — show combined diff across all active session branches
-- [ ] `claudemix sync` — rebase all session branches onto latest base branch
-- [ ] `claudemix export` — export session metadata for team sharing
-- [x] Fish shell completions
-- [x] Homebrew formula (`brew install draidel/claudemix/claudemix`)
-- [ ] Session templates (pre-configured Claude flags + prompts per session type)
-- [ ] Integration with Claude Code's native worktree feature
-- [ ] Conflict detection (warn before two sessions modify the same files)
-- [ ] Resource monitoring (warn when too many sessions are running)
-- [ ] GitLab / Bitbucket support for merge queue (currently GitHub-only)
+- [ ] `claudemix diff` — combined diff across all active sessions
+- [ ] `claudemix sync` — rebase all session branches onto latest base
+- [ ] Session templates — pre-configured Claude flags + prompts per session type
+- [ ] Conflict detection — warn when two sessions modify the same files
+- [ ] Resource monitoring — warn when too many sessions are running
+- [ ] GitLab / Bitbucket merge queue support
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+PRs welcome. Please follow existing code style (shellcheck-clean bash).
 
-PRs welcome. Please follow existing code style (shellcheck-clean bash). Key points:
-
-1. All scripts must pass `bash -n` syntax check
-2. Library files (`lib/*.sh`) must not use `set -euo pipefail` (entry point handles that)
+1. All scripts must pass `bash -n` syntax check and `shellcheck`
+2. Library files (`lib/*.sh`) must not contain `set -euo pipefail`
 3. Generated hooks must be POSIX-compatible (`#!/bin/sh`, no bashisms)
 4. Never use `eval` on user input — use arrays for command building
-5. Cross-platform: test on both macOS and Linux
+5. Use `printf` instead of `echo` for portability
+6. Test on both macOS and Linux
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for full guidelines.
 
 ## License
 
-MIT
+[MIT](LICENSE)
