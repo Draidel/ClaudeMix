@@ -6,6 +6,12 @@
     Run parallel Claude sessions with full isolation, lifecycle management, and a merge queue.
     <br />
     <br />
+    <a href="https://github.com/Draidel/ClaudeMix/releases"><img src="https://img.shields.io/github/v/release/Draidel/ClaudeMix?label=version&color=blue" alt="Version" /></a>
+    <a href="https://github.com/Draidel/ClaudeMix/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" /></a>
+    <a href="https://github.com/Draidel/ClaudeMix/actions"><img src="https://img.shields.io/github/actions/workflow/status/Draidel/ClaudeMix/ci.yml?label=CI" alt="CI" /></a>
+    <a href="https://github.com/Draidel/ClaudeMix/stargazers"><img src="https://img.shields.io/github/stars/Draidel/ClaudeMix?style=flat&color=yellow" alt="Stars" /></a>
+    <br />
+    <br />
     <a href="#install">Install</a>
     &middot;
     <a href="#quick-start">Quick Start</a>
@@ -19,6 +25,12 @@
 </p>
 
 <br />
+
+> [!WARNING]
+> **Alpha software** — ClaudeMix is under active development and not yet feature-complete. Things may break, APIs may change, and there are rough edges. That said, it works and I use it daily. Bug reports and PRs are very welcome!
+
+> [!NOTE]
+> If you find ClaudeMix useful, please consider giving it a :star: — it really helps and means a lot for a solo project. Thank you to everyone who has starred, shared, or contributed!
 
 ## Why ClaudeMix?
 
@@ -80,10 +92,10 @@ source ~/.zshrc
 
 | Platform | Status |
 |----------|--------|
-| macOS (Apple Silicon / Intel) | Fully tested |
-| Linux (Ubuntu, Debian, Fedora, RHEL) | Supported |
-| WSL 2 | Supported (bash 4+) |
-| Native Windows | Not supported — use WSL 2 |
+| macOS (Apple Silicon / Intel) | :white_check_mark: Fully tested |
+| Linux (Ubuntu, Debian, Fedora, RHEL) | :white_check_mark: Supported |
+| WSL 2 | :white_check_mark: Supported (bash 4+) |
+| Native Windows | :x: Not supported — use WSL 2 |
 
 ## Quick Start
 
@@ -338,6 +350,9 @@ CLAUDEMIX_DEBUG=1 claudemix ls
 
 ## Roadmap
 
+> [!NOTE]
+> ClaudeMix is in **alpha**. The core works and is used daily, but there's a lot more planned. PRs for any of these are especially welcome!
+
 - [ ] `claudemix status` — dashboard with session health, branch state, resource usage
 - [ ] `claudemix log <name>` — view Claude session output history
 - [ ] `claudemix diff` — combined diff across all active sessions
@@ -348,6 +363,9 @@ CLAUDEMIX_DEBUG=1 claudemix ls
 - [ ] GitLab / Bitbucket merge queue support
 
 ## Contributing
+
+> [!TIP]
+> This is a solo open-source project and contributions mean the world. Whether it's a bug report, a feature idea, a docs fix, or a PR — thank you. Seriously. :heart:
 
 PRs welcome. Please follow existing code style (shellcheck-clean bash).
 
@@ -366,4 +384,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for full guidelines.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) — built with :heart: and way too many Claude Code sessions.
