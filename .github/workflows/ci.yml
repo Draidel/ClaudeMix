@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  shellcheck:
+    name: Shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+      - name: Run shellcheck
+        run: shellcheck -P lib bin/claudemix lib/*.sh install.sh
+
+  syntax:
+    name: Syntax Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check bash syntax
+        run: |
+          for f in bin/claudemix lib/*.sh install.sh; do
+            echo "Checking $f..."
+            bash -n "$f"
+          done
+          echo "All files pass syntax check."
+
+  test:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bats-core (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y bats
+
+      - name: Install bats-core (macOS)
+        if: runner.os == 'macOS'
+        run: brew install bats-core
+
+      - name: Clone bats helpers
+        run: |
+          mkdir -p /tmp/bats-libs
+          git clone --depth 1 https://github.com/bats-core/bats-support.git /tmp/bats-libs/bats-support
+          git clone --depth 1 https://github.com/bats-core/bats-assert.git /tmp/bats-libs/bats-assert
+          git clone --depth 1 https://github.com/bats-core/bats-file.git /tmp/bats-libs/bats-file
+
+      - name: Run tests
+        env:
+          BATS_LIB_PATH: /tmp/bats-libs
+        run: bats tests/unit/ tests/e2e/

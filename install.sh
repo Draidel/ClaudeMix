@@ -98,13 +98,21 @@ if [[ -n "$SHELL_RC" ]]; then
     info "PATH already configured in $SHELL_RC"
   fi
 
-  # Install zsh completions
+  # Install shell completions
   if [[ "$SHELL_NAME" == "zsh" ]]; then
     local_completions="$HOME/.zsh/completions"
     if mkdir -p "$local_completions" 2>/dev/null; then
       if [[ -f "$INSTALL_DIR/completions/$BIN_NAME.zsh" ]]; then
         cp "$INSTALL_DIR/completions/$BIN_NAME.zsh" "$local_completions/_$BIN_NAME"
         info "Zsh completions installed to $local_completions"
+      fi
+    fi
+  elif [[ "$SHELL_NAME" == "fish" ]]; then
+    local_completions="$HOME/.config/fish/completions"
+    if mkdir -p "$local_completions" 2>/dev/null; then
+      if [[ -f "$INSTALL_DIR/completions/$BIN_NAME.fish" ]]; then
+        cp "$INSTALL_DIR/completions/$BIN_NAME.fish" "$local_completions/$BIN_NAME.fish"
+        info "Fish completions installed to $local_completions"
       fi
     fi
   fi

@@ -27,7 +27,10 @@ Each session gets its own git worktree (isolated files), its own branch (`claude
 ## Install
 
 ```bash
-# Clone and add to PATH
+# Homebrew (recommended)
+brew install draidel/claudemix/claudemix
+
+# Or clone and add to PATH
 git clone https://github.com/Draidel/ClaudeMix.git ~/.claudemix
 echo 'export PATH="$HOME/.claudemix/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
@@ -210,7 +213,11 @@ All values are optional. ClaudeMix auto-detects defaults from:
 │   ├── merge-queue.sh           # Branch consolidation + PR creation
 │   ├── hooks.sh                 # Git hooks installer (husky + direct)
 │   └── tui.sh                   # Interactive menus (gum + fallback)
-├── completions/                 # Shell completions (zsh + bash)
+├── completions/                 # Shell completions (zsh + bash + fish)
+├── tests/                       # Bats test suite (unit + e2e)
+├── scripts/                     # Dev scripts (test runner)
+├── Formula/                     # Homebrew formula
+├── .github/workflows/           # CI (shellcheck + syntax + tests)
 └── install.sh                   # curl|bash installer
 
 my-project/                      # Per-project (gitignored)
@@ -290,6 +297,13 @@ source ~/.claudemix/completions/claudemix.bash
 # Or add to .bashrc
 ```
 
+### Fish
+
+```fish
+# Auto-installed by install.sh and Homebrew, or manually:
+cp ~/.claudemix/completions/claudemix.fish ~/.config/fish/completions/
+```
+
 ## Tips
 
 ### Alias for faster typing
@@ -319,8 +333,8 @@ CLAUDEMIX_DEBUG=1 claudemix ls
 - [ ] `claudemix diff` — show combined diff across all active session branches
 - [ ] `claudemix sync` — rebase all session branches onto latest base branch
 - [ ] `claudemix export` — export session metadata for team sharing
-- [ ] Fish shell completions
-- [ ] Homebrew formula (`brew install claudemix`)
+- [x] Fish shell completions
+- [x] Homebrew formula (`brew install draidel/claudemix/claudemix`)
 - [ ] Session templates (pre-configured Claude flags + prompts per session type)
 - [ ] Integration with Claude Code's native worktree feature
 - [ ] Conflict detection (warn before two sessions modify the same files)
