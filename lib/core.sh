@@ -1,19 +1,16 @@
-#!/usr/bin/env bash
 # ClaudeMix — core.sh
-# Shared utilities, config loading, logging, dependency checks.
-# Sourced by all other modules. Never executed directly.
-
-set -euo pipefail
+# Foundation: constants, colors, logging, config, dependency checks, utilities.
+# Sourced by bin/claudemix. Never executed directly.
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-CLAUDEMIX_VERSION="0.1.0"
-CLAUDEMIX_CONFIG_FILE=".claudemix.yml"
-CLAUDEMIX_DIR=".claudemix"
-CLAUDEMIX_WORKTREES_DIR="$CLAUDEMIX_DIR/worktrees"
-CLAUDEMIX_SESSIONS_DIR="$CLAUDEMIX_DIR/sessions"
-CLAUDEMIX_BRANCH_PREFIX="claudemix/"
-CLAUDEMIX_TMUX_PREFIX="claudemix-"
+readonly CLAUDEMIX_VERSION="0.2.0"
+readonly CLAUDEMIX_CONFIG_FILE=".claudemix.yml"
+readonly CLAUDEMIX_DIR=".claudemix"
+readonly CLAUDEMIX_WORKTREES_DIR="$CLAUDEMIX_DIR/worktrees"
+readonly CLAUDEMIX_SESSIONS_DIR="$CLAUDEMIX_DIR/sessions"
+readonly CLAUDEMIX_BRANCH_PREFIX="claudemix/"
+readonly CLAUDEMIX_TMUX_PREFIX="claudemix-"
 
 # ── Colors ───────────────────────────────────────────────────────────────────
 
@@ -33,11 +30,15 @@ fi
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 
-log_info()  { echo "${BLUE}info${RESET}  $*"; }
-log_ok()    { echo "${GREEN}ok${RESET}    $*"; }
-log_warn()  { echo "${YELLOW}warn${RESET}  $*" >&2; }
-log_error() { echo "${RED}error${RESET} $*" >&2; }
-log_debug() { [[ "${CLAUDEMIX_DEBUG:-}" == "1" ]] && echo "${DIM}debug $*${RESET}" >&2 || true; }
+log_info()  { printf '%s\n' "${BLUE}info${RESET}  $*"; }
+log_ok()    { printf '%s\n' "${GREEN}ok${RESET}    $*"; }
+log_warn()  { printf '%s\n' "${YELLOW}warn${RESET}  $*" >&2; }
+log_error() { printf '%s\n' "${RED}error${RESET} $*" >&2; }
+log_debug() {
+  if [[ "${CLAUDEMIX_DEBUG:-}" == "1" ]]; then
+    printf '%s\n' "${DIM}debug $*${RESET}" >&2
+  fi
+}
 
 die() {
   log_error "$@"
@@ -47,7 +48,6 @@ die() {
 # ── Project Detection ────────────────────────────────────────────────────────
 
 # Find the git root of the current project.
-# Returns empty string if not in a git repo.
 find_project_root() {
   git rev-parse --show-toplevel 2>/dev/null || echo ""
 }
@@ -61,27 +61,42 @@ require_project() {
   export PROJECT_ROOT
 }
 
-# Ensure the .claudemix directory exists.
+# Ensure the .claudemix directory structure exists.
 ensure_claudemix_dir() {
-  require_project
   mkdir -p "$PROJECT_ROOT/$CLAUDEMIX_WORKTREES_DIR"
   mkdir -p "$PROJECT_ROOT/$CLAUDEMIX_SESSIONS_DIR"
 
-  # Add to .gitignore if not already there
+  # Add to .gitignore if not already present
   local gitignore="$PROJECT_ROOT/.gitignore"
   if [[ -f "$gitignore" ]]; then
     if ! grep -qF "$CLAUDEMIX_DIR/" "$gitignore" 2>/dev/null; then
-      echo "" >> "$gitignore"
-      echo "# ClaudeMix session data" >> "$gitignore"
-      echo "$CLAUDEMIX_DIR/" >> "$gitignore"
+      printf '\n# ClaudeMix session data\n%s/\n' "$CLAUDEMIX_DIR" >> "$gitignore"
       log_debug "Added $CLAUDEMIX_DIR/ to .gitignore"
     fi
   fi
 }
 
+# ── Package Manager Detection ────────────────────────────────────────────────
+
+# Detect the package manager for a given directory.
+# Args: $1 = directory path (defaults to PROJECT_ROOT)
+# Output: pnpm | yarn | bun | npm
+detect_pkg_manager() {
+  local dir="${1:-$PROJECT_ROOT}"
+  if [[ -f "$dir/pnpm-lock.yaml" ]] || [[ -f "$dir/pnpm-workspace.yaml" ]]; then
+    printf 'pnpm'
+  elif [[ -f "$dir/yarn.lock" ]]; then
+    printf 'yarn'
+  elif [[ -f "$dir/bun.lockb" ]] || [[ -f "$dir/bun.lock" ]]; then
+    printf 'bun'
+  else
+    printf 'npm'
+  fi
+}
+
 # ── Config Loading ───────────────────────────────────────────────────────────
 
-# Default configuration values.
+# Default configuration values (global, mutable).
 declare -g CFG_VALIDATE=""
 declare -g CFG_PROTECTED_BRANCHES="main"
 declare -g CFG_MERGE_TARGET=""
@@ -90,14 +105,13 @@ declare -g CFG_CLAUDE_FLAGS="--dangerously-skip-permissions"
 declare -g CFG_BASE_BRANCH=""
 declare -g CFG_WORKTREE_DIR=""
 
-# Parse a simple flat YAML config file (key: value pairs, no nesting).
-# Handles comments (#) and blank lines.
+# Parse a flat YAML config file (key: value, no nesting).
+# Handles comments, blank lines, and colons in values.
 load_config() {
-  require_project
   local config_path="$PROJECT_ROOT/$CLAUDEMIX_CONFIG_FILE"
 
   if [[ ! -f "$config_path" ]]; then
-    log_debug "No config file found at $config_path, using defaults"
+    log_debug "No config file found, using defaults"
     _detect_defaults
     return 0
   fi
@@ -105,26 +119,28 @@ load_config() {
   log_debug "Loading config from $config_path"
 
   while IFS= read -r line || [[ -n "$line" ]]; do
-    # Skip comments and blank lines
+    # Strip inline comments and skip blank lines
     line="${line%%#*}"
-    line="$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-    [[ -z "$line" ]] && continue
+    [[ -z "${line// /}" ]] && continue
 
-    # Parse key: value
-    local key value
-    key="$(echo "$line" | sed 's/:.*//' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-    value="$(echo "$line" | sed 's/^[^:]*:[[:space:]]*//' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    # Parse key: value using regex (handles colons in values correctly)
+    if [[ "$line" =~ ^[[:space:]]*([a-zA-Z_][a-zA-Z0-9_]*)[[:space:]]*:[[:space:]]*(.*) ]]; then
+      local key="${BASH_REMATCH[1]}"
+      local value="${BASH_REMATCH[2]}"
+      # Trim trailing whitespace
+      value="${value%"${value##*[![:space:]]}"}"
 
-    case "$key" in
-      validate)            CFG_VALIDATE="$value" ;;
-      protected_branches)  CFG_PROTECTED_BRANCHES="$value" ;;
-      merge_target)        CFG_MERGE_TARGET="$value" ;;
-      merge_strategy)      CFG_MERGE_STRATEGY="$value" ;;
-      claude_flags)        CFG_CLAUDE_FLAGS="$value" ;;
-      base_branch)         CFG_BASE_BRANCH="$value" ;;
-      worktree_dir)        CFG_WORKTREE_DIR="$value" ;;
-      *)                   log_debug "Unknown config key: $key" ;;
-    esac
+      case "$key" in
+        validate)            CFG_VALIDATE="$value" ;;
+        protected_branches)  CFG_PROTECTED_BRANCHES="$value" ;;
+        merge_target)        CFG_MERGE_TARGET="$value" ;;
+        merge_strategy)      CFG_MERGE_STRATEGY="$value" ;;
+        claude_flags)        CFG_CLAUDE_FLAGS="$value" ;;
+        base_branch)         CFG_BASE_BRANCH="$value" ;;
+        worktree_dir)        CFG_WORKTREE_DIR="$value" ;;
+        *)                   log_debug "Unknown config key: $key" ;;
+      esac
+    fi
   done < "$config_path"
 
   _detect_defaults
@@ -135,12 +151,14 @@ _detect_defaults() {
   # Detect validate command
   if [[ -z "$CFG_VALIDATE" ]]; then
     if [[ -f "$PROJECT_ROOT/package.json" ]]; then
+      local pm
+      pm="$(detect_pkg_manager "$PROJECT_ROOT")"
       if grep -q '"validate"' "$PROJECT_ROOT/package.json" 2>/dev/null; then
-        CFG_VALIDATE="pnpm validate"
+        CFG_VALIDATE="$pm validate"
       elif grep -q '"lint"' "$PROJECT_ROOT/package.json" 2>/dev/null; then
-        CFG_VALIDATE="pnpm lint"
+        CFG_VALIDATE="$pm lint"
       elif grep -q '"test"' "$PROJECT_ROOT/package.json" 2>/dev/null; then
-        CFG_VALIDATE="npm test"
+        CFG_VALIDATE="$pm test"
       fi
     elif [[ -f "$PROJECT_ROOT/Makefile" ]]; then
       if grep -q '^lint:' "$PROJECT_ROOT/Makefile" 2>/dev/null; then
@@ -153,14 +171,14 @@ _detect_defaults() {
     elif [[ -f "$PROJECT_ROOT/go.mod" ]]; then
       CFG_VALIDATE="go vet ./..."
     fi
-    log_debug "Auto-detected validate command: ${CFG_VALIDATE:-none}"
+    log_debug "Auto-detected validate: ${CFG_VALIDATE:-none}"
   fi
 
   # Detect default branch
   if [[ -z "$CFG_BASE_BRANCH" ]]; then
-    CFG_BASE_BRANCH="$(git -C "$PROJECT_ROOT" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "")"
+    CFG_BASE_BRANCH="$(git -C "$PROJECT_ROOT" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null \
+      | sed 's@^refs/remotes/origin/@@' || echo "")"
     if [[ -z "$CFG_BASE_BRANCH" ]]; then
-      # Fallback: check common branch names
       for branch in main master staging develop; do
         if git -C "$PROJECT_ROOT" show-ref --verify --quiet "refs/heads/$branch" 2>/dev/null; then
           CFG_BASE_BRANCH="$branch"
@@ -172,7 +190,7 @@ _detect_defaults() {
     log_debug "Auto-detected base branch: $CFG_BASE_BRANCH"
   fi
 
-  # Detect merge target (defaults to base branch)
+  # Merge target defaults to base branch
   if [[ -z "$CFG_MERGE_TARGET" ]]; then
     CFG_MERGE_TARGET="$CFG_BASE_BRANCH"
   fi
@@ -183,14 +201,31 @@ _detect_defaults() {
   fi
 }
 
-# ── Dependency Checks ────────────────────────────────────────────────────────
+# Write default config to a file.
+# Args: $1 = output path
+write_default_config() {
+  local config_path="$1"
+  cat > "$config_path" << EOF
+# ClaudeMix configuration
+# https://github.com/Draidel/ClaudeMix
 
-# Check if a command exists.
-has_cmd() {
-  command -v "$1" &>/dev/null
+validate: ${CFG_VALIDATE:-npm test}
+protected_branches: ${CFG_PROTECTED_BRANCHES}
+merge_target: ${CFG_MERGE_TARGET}
+merge_strategy: ${CFG_MERGE_STRATEGY}
+base_branch: ${CFG_BASE_BRANCH}
+claude_flags: ${CFG_CLAUDE_FLAGS}
+EOF
 }
 
-# Check all required dependencies.
+# ── Dependency Checks ────────────────────────────────────────────────────────
+
+# Check if a command is available on PATH.
+has_cmd() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+# Check required and optional dependencies. Dies if required ones are missing.
 check_dependencies() {
   local missing=()
 
@@ -206,26 +241,26 @@ check_dependencies() {
     die "Missing required dependencies: ${missing[*]}"
   fi
 
-  # Optional but recommended
+  # Warn about optional dependencies with cross-platform install hints
   if ! has_cmd tmux; then
-    log_warn "tmux not installed. Sessions will run in foreground (no persistence)."
-    log_warn "Install with: brew install tmux"
+    log_warn "tmux not installed. Sessions run in foreground (no persistence)."
+    log_warn "Install: brew install tmux (macOS) | apt install tmux (Debian/Ubuntu)"
   fi
 
   if ! has_cmd gum; then
-    log_warn "gum not installed. Interactive menus disabled (using basic prompts)."
-    log_warn "Install with: brew install gum"
+    log_warn "gum not installed. Interactive menus disabled (basic prompts instead)."
+    log_warn "Install: brew install gum (macOS) | see https://github.com/charmbracelet/gum#installation"
   fi
 
   if ! has_cmd gh; then
-    log_warn "GitHub CLI not installed. Merge queue PR creation disabled."
-    log_warn "Install with: brew install gh"
+    log_warn "gh not installed. Merge queue PR creation disabled."
+    log_warn "Install: brew install gh (macOS) | see https://cli.github.com/"
   fi
 }
 
 # ── Utility Functions ────────────────────────────────────────────────────────
 
-# Get the current git branch name.
+# Get the current git branch name. Empty string if detached HEAD.
 current_branch() {
   git -C "${1:-$PROJECT_ROOT}" symbolic-ref --short HEAD 2>/dev/null || echo ""
 }
@@ -235,7 +270,7 @@ branch_exists() {
   git -C "$PROJECT_ROOT" show-ref --verify --quiet "refs/heads/$1" 2>/dev/null
 }
 
-# Check if tmux is available and running.
+# Check if tmux is available.
 tmux_available() {
   has_cmd tmux
 }
@@ -245,30 +280,38 @@ gum_available() {
   has_cmd gum
 }
 
-# Check if we're currently inside a tmux session.
+# Check if we're inside a tmux session.
 in_tmux() {
   [[ -n "${TMUX:-}" ]]
 }
 
-# Sanitize a session name (alphanumeric, hyphens, underscores only).
+# Sanitize a session name to alphanumeric, hyphens, and underscores.
+# Dies if the input produces an empty name.
 sanitize_name() {
-  echo "$1" | tr -cs 'a-zA-Z0-9_-' '-' | sed 's/^-//;s/-$//'
+  local input="${1:-}"
+  local result
+  result="$(printf '%s' "$input" | tr -cs 'a-zA-Z0-9_-' '-' | sed 's/^-*//;s/-*$//')"
+  if [[ -z "$result" ]]; then
+    die "Invalid session name: '$input'. Use alphanumeric characters, hyphens, or underscores."
+  fi
+  printf '%s' "$result"
 }
 
-# Format a timestamp for display.
+# Format an ISO 8601 timestamp for display.
 format_time() {
   local timestamp="$1"
+  # GNU date (Linux or macOS with coreutils)
   if has_cmd gdate; then
-    gdate -d "$timestamp" '+%b %d %H:%M' 2>/dev/null || echo "$timestamp"
-  elif date -d "$timestamp" '+%b %d %H:%M' 2>/dev/null; then
-    :
-  else
-    # macOS date fallback
-    echo "$timestamp" | sed 's/T/ /;s/\+.*//' | cut -c1-16
+    gdate -d "$timestamp" '+%b %d %H:%M' 2>/dev/null && return 0
   fi
+  if date --version >/dev/null 2>&1; then
+    date -d "$timestamp" '+%b %d %H:%M' 2>/dev/null && return 0
+  fi
+  # BSD date (macOS) — simple fallback
+  printf '%s' "$timestamp" | sed 's/T/ /;s/[+Z].*//' | cut -c1-16
 }
 
-# ISO 8601 timestamp.
+# Generate an ISO 8601 UTC timestamp.
 now_iso() {
   date -u '+%Y-%m-%dT%H:%M:%SZ'
 }

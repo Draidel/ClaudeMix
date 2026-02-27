@@ -11,7 +11,7 @@
 #   claudemix kill <name>        Kill a session
 #   claudemix merge              Consolidate branches into a single PR
 #   claudemix cleanup            Remove merged worktrees
-#   claudemix hooks [install|uninstall|status]    Manage git hooks
+#   claudemix hooks [cmd]        Manage git hooks
 #   claudemix init               Generate .claudemix.yml config
 #   claudemix version            Show version
 
@@ -19,7 +19,6 @@ set -euo pipefail
 
 # ── Resolve Script Location ─────────────────────────────────────────────────
 
-# Follow symlinks to find the real script location
 SCRIPT_PATH="${BASH_SOURCE[0]}"
 while [[ -L "$SCRIPT_PATH" ]]; do
   SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
@@ -38,7 +37,7 @@ source "$CLAUDEMIX_HOME/lib/hooks.sh"
 source "$CLAUDEMIX_HOME/lib/merge-queue.sh"
 source "$CLAUDEMIX_HOME/lib/tui.sh"
 
-# ── Argument Parsing ─────────────────────────────────────────────────────────
+# ── Main ─────────────────────────────────────────────────────────────────────
 
 main() {
   local command="${1:-}"
@@ -46,7 +45,7 @@ main() {
   # Fast paths (no project context needed)
   case "$command" in
     -v|--version|version)
-      echo "claudemix v${CLAUDEMIX_VERSION}"
+      printf 'claudemix v%s\n' "$CLAUDEMIX_VERSION"
       exit 0
       ;;
     -h|--help|help)
@@ -55,14 +54,13 @@ main() {
       ;;
   esac
 
-  # All other commands need a project
+  # All other commands need a project context
   require_project
   check_dependencies
   load_config
 
   case "$command" in
     "")
-      # No args: interactive TUI
       tui_main_menu
       ;;
     ls|list)
@@ -111,26 +109,15 @@ main() {
       local config_path="$PROJECT_ROOT/$CLAUDEMIX_CONFIG_FILE"
       if [[ -f "$config_path" ]]; then
         log_warn "Config already exists: $config_path"
-        echo -n "Overwrite? [y/N] "
+        printf 'Overwrite? [y/N] '
         read -r yn
         [[ "$yn" =~ ^[Yy] ]] || exit 0
       fi
-      cat > "$config_path" << EOF
-# ClaudeMix configuration
-# https://github.com/Draidel/ClaudeMix
-
-validate: ${CFG_VALIDATE:-npm test}
-protected_branches: ${CFG_PROTECTED_BRANCHES}
-merge_target: ${CFG_MERGE_TARGET}
-merge_strategy: ${CFG_MERGE_STRATEGY}
-base_branch: ${CFG_BASE_BRANCH}
-claude_flags: ${CFG_CLAUDE_FLAGS}
-EOF
+      write_default_config "$config_path"
       log_ok "Config written to $config_path"
       ;;
     *)
-      # Anything else is treated as a session name
-      shift 0  # keep $@ intact
+      # Treat anything else as a session name
       session_create "$command" "${@:2}"
       ;;
   esac
@@ -177,6 +164,11 @@ CONFIGURATION
 DEPENDENCIES
   Required: git, claude (Claude Code CLI)
   Optional: tmux (session persistence), gum (interactive TUI), gh (merge queue PRs)
+
+ENVIRONMENT VARIABLES
+  CLAUDEMIX_DEBUG=1     Enable debug logging
+  CLAUDEMIX_HOME=...    Override installation directory
+  NO_COLOR=1            Disable colored output
 
 More info: https://github.com/Draidel/ClaudeMix
 EOF

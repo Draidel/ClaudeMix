@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # ClaudeMix installer
 # Usage: curl -sSL https://raw.githubusercontent.com/Draidel/ClaudeMix/main/install.sh | bash
+#
+# Environment variables:
+#   CLAUDEMIX_HOME   Override installation directory (default: ~/.claudemix)
 
 set -euo pipefail
 
@@ -8,128 +11,155 @@ REPO="https://github.com/Draidel/ClaudeMix.git"
 INSTALL_DIR="${CLAUDEMIX_HOME:-$HOME/.claudemix}"
 BIN_NAME="claudemix"
 
-# Colors
-RED=$'\033[0;31m'
-GREEN=$'\033[0;32m'
-YELLOW=$'\033[0;33m'
-CYAN=$'\033[0;36m'
-BOLD=$'\033[1m'
-RESET=$'\033[0m'
+# ── Colors ────────────────────────────────────────────────────────────────────
 
-info()  { echo "${CYAN}info${RESET}  $*"; }
-ok()    { echo "${GREEN}ok${RESET}    $*"; }
-warn()  { echo "${YELLOW}warn${RESET}  $*" >&2; }
-error() { echo "${RED}error${RESET} $*" >&2; }
+if [[ -t 1 ]] && [[ "${NO_COLOR:-}" != "1" ]]; then
+  RED=$'\033[0;31m'
+  GREEN=$'\033[0;32m'
+  YELLOW=$'\033[0;33m'
+  CYAN=$'\033[0;36m'
+  BOLD=$'\033[1m'
+  RESET=$'\033[0m'
+else
+  RED="" GREEN="" YELLOW="" CYAN="" BOLD="" RESET=""
+fi
 
-# ── Pre-flight Checks ───────────────────────────────────────────────────────
+info()  { printf '%s\n' "${CYAN}info${RESET}  $*"; }
+ok()    { printf '%s\n' "${GREEN}ok${RESET}    $*"; }
+warn()  { printf '%s\n' "${YELLOW}warn${RESET}  $*" >&2; }
+error() { printf '%s\n' "${RED}error${RESET} $*" >&2; }
 
-if ! command -v git &>/dev/null; then
+# ── Pre-flight Checks ────────────────────────────────────────────────────────
+
+if ! command -v git >/dev/null 2>&1; then
   error "git is required. Install it first."
   exit 1
 fi
 
-# ── Install ──────────────────────────────────────────────────────────────────
+# ── Install / Update ─────────────────────────────────────────────────────────
 
 if [[ -d "$INSTALL_DIR" ]]; then
   info "Updating existing installation at $INSTALL_DIR"
-  (cd "$INSTALL_DIR" && git pull --quiet origin main 2>/dev/null) || {
+  if ! (cd "$INSTALL_DIR" && git pull --quiet origin main); then
     warn "Git pull failed. Reinstalling..."
     rm -rf "$INSTALL_DIR"
-    git clone --depth 1 "$REPO" "$INSTALL_DIR" 2>/dev/null
-  }
+    git clone --depth 1 "$REPO" "$INSTALL_DIR" || {
+      error "Failed to clone repository. Check your network connection."
+      exit 1
+    }
+  fi
 else
   info "Installing ClaudeMix to $INSTALL_DIR"
-  git clone --depth 1 "$REPO" "$INSTALL_DIR" 2>/dev/null
+  git clone --depth 1 "$REPO" "$INSTALL_DIR" || {
+    error "Failed to clone repository. Check your network connection."
+    exit 1
+  }
 fi
 
 chmod +x "$INSTALL_DIR/bin/$BIN_NAME"
 
-# ── Shell Integration ────────────────────────────────────────────────────────
+# ── Shell Integration ─────────────────────────────────────────────────────────
 
 BIN_PATH="$INSTALL_DIR/bin"
-SHELL_NAME="$(basename "$SHELL")"
+SHELL_NAME="$(basename "${SHELL:-/bin/bash}")"
 SHELL_RC=""
 
 case "$SHELL_NAME" in
-  zsh)  SHELL_RC="$HOME/.zshrc" ;;
+  zsh)
+    SHELL_RC="$HOME/.zshrc"
+    ;;
   bash)
     if [[ -f "$HOME/.bash_profile" ]]; then
       SHELL_RC="$HOME/.bash_profile"
+    elif [[ -f "$HOME/.bashrc" ]]; then
+      SHELL_RC="$HOME/.bashrc"
     else
       SHELL_RC="$HOME/.bashrc"
     fi
     ;;
-  fish) SHELL_RC="$HOME/.config/fish/config.fish" ;;
+  fish)
+    SHELL_RC="$HOME/.config/fish/config.fish"
+    ;;
+  *)
+    warn "Unsupported shell: $SHELL_NAME. Add $BIN_PATH to your PATH manually."
+    ;;
 esac
 
-# Add to PATH if not already there
 if [[ -n "$SHELL_RC" ]]; then
-  PATH_LINE="export PATH=\"$BIN_PATH:\$PATH\""
-
+  local_path_line="export PATH=\"$BIN_PATH:\$PATH\""
   if [[ "$SHELL_NAME" == "fish" ]]; then
-    PATH_LINE="fish_add_path $BIN_PATH"
+    local_path_line="fish_add_path $BIN_PATH"
   fi
 
   if ! grep -qF "$BIN_PATH" "$SHELL_RC" 2>/dev/null; then
-    echo "" >> "$SHELL_RC"
-    echo "# ClaudeMix" >> "$SHELL_RC"
-    echo "$PATH_LINE" >> "$SHELL_RC"
+    printf '\n# ClaudeMix\n%s\n' "$local_path_line" >> "$SHELL_RC"
     ok "Added $BIN_PATH to PATH in $SHELL_RC"
   else
     info "PATH already configured in $SHELL_RC"
   fi
 
-  # Install completions for zsh
+  # Install zsh completions
   if [[ "$SHELL_NAME" == "zsh" ]]; then
     local_completions="$HOME/.zsh/completions"
-    if [[ -d "$local_completions" ]] || mkdir -p "$local_completions" 2>/dev/null; then
+    if mkdir -p "$local_completions" 2>/dev/null; then
       if [[ -f "$INSTALL_DIR/completions/$BIN_NAME.zsh" ]]; then
         cp "$INSTALL_DIR/completions/$BIN_NAME.zsh" "$local_completions/_$BIN_NAME"
-        info "Zsh completions installed"
+        info "Zsh completions installed to $local_completions"
       fi
     fi
   fi
 fi
 
-# ── Check Optional Dependencies ──────────────────────────────────────────────
+# ── Check Optional Dependencies ───────────────────────────────────────────────
 
-echo ""
+printf '\n'
 info "Checking optional dependencies..."
 
 missing_optional=()
-if ! command -v tmux &>/dev/null; then
-  missing_optional+=("tmux (session persistence) — brew install tmux")
+if ! command -v tmux >/dev/null 2>&1; then
+  missing_optional+=("tmux (session persistence)")
 fi
-if ! command -v gum &>/dev/null; then
-  missing_optional+=("gum (interactive TUI) — brew install gum")
+if ! command -v gum >/dev/null 2>&1; then
+  missing_optional+=("gum (interactive TUI)")
 fi
-if ! command -v gh &>/dev/null; then
-  missing_optional+=("gh (merge queue PRs) — brew install gh")
+if ! command -v gh >/dev/null 2>&1; then
+  missing_optional+=("gh (merge queue PRs)")
 fi
-if ! command -v claude &>/dev/null; then
-  missing_optional+=("claude (Claude Code CLI) — https://docs.anthropic.com/en/docs/claude-code")
+if ! command -v claude >/dev/null 2>&1; then
+  missing_optional+=("claude (Claude Code CLI — https://docs.anthropic.com/en/docs/claude-code)")
 fi
 
 if (( ${#missing_optional[@]} > 0 )); then
   warn "Optional dependencies not found:"
   for dep in "${missing_optional[@]}"; do
-    echo "  - $dep"
+    printf '  - %s\n' "$dep"
   done
-  echo ""
+  printf '\n'
+  # Cross-platform install hints
+  if command -v brew >/dev/null 2>&1; then
+    info "Install with: brew install tmux gum gh"
+  elif command -v apt-get >/dev/null 2>&1; then
+    info "Install tmux: sudo apt install tmux"
+    info "Install gum: see https://github.com/charmbracelet/gum#installation"
+    info "Install gh: see https://cli.github.com/"
+  else
+    info "See individual project pages for installation instructions."
+  fi
+  printf '\n'
   info "ClaudeMix works without these but some features will be limited."
 fi
 
-# ── Done ─────────────────────────────────────────────────────────────────────
+# ── Done ──────────────────────────────────────────────────────────────────────
 
-echo ""
-echo "${BOLD}${GREEN}ClaudeMix installed successfully!${RESET}"
-echo ""
-echo "  Restart your shell or run:"
-echo "    ${CYAN}source $SHELL_RC${RESET}"
-echo ""
-echo "  Then in any git project:"
-echo "    ${CYAN}claudemix init${RESET}          Generate config"
-echo "    ${CYAN}claudemix hooks install${RESET}  Set up git hooks"
-echo "    ${CYAN}claudemix auth-fix${RESET}       Start a session"
-echo ""
-echo "  Docs: ${CYAN}https://github.com/Draidel/ClaudeMix${RESET}"
+printf '\n%s\n\n' "${BOLD}${GREEN}ClaudeMix installed successfully!${RESET}"
+
+if [[ -n "$SHELL_RC" ]]; then
+  printf '  Restart your shell or run:\n'
+  printf '    %s\n\n' "${CYAN}source $SHELL_RC${RESET}"
+fi
+
+printf '  Then in any git project:\n'
+printf '    %s          Generate config\n' "${CYAN}claudemix init${RESET}"
+printf '    %s  Set up git hooks\n' "${CYAN}claudemix hooks install${RESET}"
+printf '    %s       Start a session\n' "${CYAN}claudemix auth-fix${RESET}"
+printf '\n  Docs: %s\n' "${CYAN}https://github.com/Draidel/ClaudeMix${RESET}"

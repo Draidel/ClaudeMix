@@ -22,7 +22,7 @@ claudemix ls             # See what's running
 claudemix merge          # Bundle finished work into one PR
 ```
 
-Each session gets its own git worktree (isolated files), its own branch (`claudemix/<name>`), and optionally its own tmux session (persistence). Git hooks prevent broken code from ever reaching CI.
+Each session gets its own git worktree (isolated files), its own branch (`claudemix/<name>`), and optionally its own tmux session (persistence). Git hooks prevent broken code from reaching CI.
 
 ## Install
 
@@ -38,18 +38,26 @@ curl -sSL https://raw.githubusercontent.com/Draidel/ClaudeMix/main/install.sh | 
 
 ### Dependencies
 
-| Dependency | Required | Purpose |
-|-----------|----------|---------|
-| git | Yes | Worktree management |
-| [claude](https://docs.anthropic.com/en/docs/claude-code) | Yes | AI coding sessions |
-| [tmux](https://github.com/tmux/tmux) | No | Session persistence (recommended) |
-| [gum](https://github.com/charmbracelet/gum) | No | Interactive TUI menus |
-| [gh](https://cli.github.com/) | No | Merge queue PR creation |
+| Dependency | Required | Purpose | Install |
+|-----------|----------|---------|---------|
+| [git](https://git-scm.com/) | Yes | Worktree management | Pre-installed on most systems |
+| [claude](https://docs.anthropic.com/en/docs/claude-code) | Yes | AI coding sessions | `npm install -g @anthropic-ai/claude-code` |
+| [tmux](https://github.com/tmux/tmux) | No | Session persistence (recommended) | `brew install tmux` / `apt install tmux` |
+| [gum](https://github.com/charmbracelet/gum) | No | Interactive TUI menus | `brew install gum` / [install guide](https://github.com/charmbracelet/gum#installation) |
+| [gh](https://cli.github.com/) | No | Merge queue PR creation | `brew install gh` / [install guide](https://cli.github.com/) |
 
-```bash
-# Install optional dependencies (macOS)
-brew install tmux gum gh
-```
+### Supported Platforms
+
+| Platform | Status | Notes |
+|----------|--------|-------|
+| macOS (Apple Silicon) | Fully tested | Primary development platform |
+| macOS (Intel) | Fully tested | |
+| Linux (Ubuntu/Debian) | Supported | Tested on Ubuntu 22.04+ |
+| Linux (Fedora/RHEL) | Supported | |
+| WSL 2 (Windows) | Supported | Requires bash 4+ |
+| Native Windows | Not supported | Use WSL 2 |
+
+**Requirements**: bash 4.0+, git 2.17+ (worktree support)
 
 ## Quick Start
 
@@ -101,6 +109,14 @@ claudemix cleanup           # Remove merged worktrees
 | `claudemix hooks status` | Show current hook status |
 | `claudemix init` | Generate `.claudemix.yml` config |
 
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CLAUDEMIX_DEBUG` | `0` | Set to `1` for debug logging |
+| `CLAUDEMIX_HOME` | `~/.claudemix` | Override installation directory |
+| `NO_COLOR` | `0` | Set to `1` to disable colors |
+
 ## How It Works
 
 ### Session Lifecycle
@@ -122,7 +138,7 @@ claudemix auth-fix
 
 ### Git Hooks
 
-**Pre-commit** (via husky + lint-staged):
+**Pre-commit** (via husky + lint-staged for Node.js, or direct for other projects):
 - Runs ESLint on staged files only
 - ~2-5 seconds per commit
 - Auto-fixes what it can
@@ -131,6 +147,7 @@ claudemix auth-fix
 - Blocks direct push to protected branches (main, staging, etc.)
 - Runs your project's validate command (lint + type-check)
 - Prevents broken code from reaching CI
+- POSIX-compatible (works with any `/bin/sh`)
 
 ### Merge Queue
 
@@ -146,7 +163,7 @@ claudemix/bug-fix        ─┘
 
 1. `claudemix merge` shows all session branches
 2. You select which ones to consolidate
-3. Creates a merge branch, cherry-picks selected work
+3. Creates a merge branch, merges selected work
 4. Runs validation on the consolidated result
 5. Creates a single PR with auto-merge enabled
 
@@ -175,9 +192,10 @@ claude_flags: --dangerously-skip-permissions --verbose
 ```
 
 All values are optional. ClaudeMix auto-detects defaults from:
-- `package.json` scripts (validate, lint, test)
-- `Makefile` targets
-- `Cargo.toml` / `go.mod`
+- `package.json` scripts (validate, lint, test) + package manager (pnpm/yarn/bun/npm)
+- `Makefile` targets (lint, check)
+- `Cargo.toml` (cargo check + clippy)
+- `go.mod` (go vet)
 - Git remote default branch
 
 ## Architecture
@@ -186,38 +204,53 @@ All values are optional. ClaudeMix auto-detects defaults from:
 ~/.claudemix/                    # Installation (global)
 ├── bin/claudemix                # Entry point
 ├── lib/
-│   ├── core.sh                  # Config, logging, utils
-│   ├── session.sh               # Session lifecycle
+│   ├── core.sh                  # Config, logging, utils, pkg detection
+│   ├── session.sh               # Session lifecycle (create/attach/kill)
 │   ├── worktree.sh              # Git worktree management
-│   ├── merge-queue.sh           # Branch consolidation
-│   ├── hooks.sh                 # Git hooks installer
-│   └── tui.sh                   # Interactive menus (gum)
-├── completions/                 # Shell completions
-└── install.sh                   # Installer
+│   ├── merge-queue.sh           # Branch consolidation + PR creation
+│   ├── hooks.sh                 # Git hooks installer (husky + direct)
+│   └── tui.sh                   # Interactive menus (gum + fallback)
+├── completions/                 # Shell completions (zsh + bash)
+└── install.sh                   # curl|bash installer
 
 my-project/                      # Per-project (gitignored)
 ├── .claudemix.yml               # Project config
 └── .claudemix/
-    ├── worktrees/               # Git worktrees
+    ├── worktrees/               # Git worktrees (one per session)
     │   ├── auth-fix/
     │   └── ui-update/
-    └── sessions/                # Session metadata
+    └── sessions/                # Session metadata files
         ├── auth-fix.meta
         └── ui-update.meta
 ```
 
+### Module Responsibilities
+
+| Module | Lines | Responsibility |
+|--------|-------|---------------|
+| `core.sh` | ~250 | Constants, colors, logging, YAML config parser, package manager detection, dependency checks, utility functions |
+| `session.sh` | ~200 | Session CRUD: create (worktree + tmux + claude), attach, list, kill. Array-based command building (no eval). |
+| `worktree.sh` | ~180 | Git worktree lifecycle: create, remove, list, cleanup merged. Path validation before rm. |
+| `merge-queue.sh` | ~190 | Branch consolidation: select branches, merge, validate, push, create PR via gh. Trap-based cleanup on error. |
+| `hooks.sh` | ~200 | Git hooks: husky path (pre-commit + lint-staged) and direct path. POSIX-compatible generated hooks. |
+| `tui.sh` | ~230 | Interactive menus via gum with graceful fallback to numbered prompts. |
+| `bin/claudemix` | ~150 | Entry point: argument parsing, routing, help. Only file with `set -euo pipefail`. |
+| `install.sh` | ~130 | Installer: clone, PATH setup, completions, dependency check. |
+
 ### Design Principles
 
-- **Zero hardcoded project knowledge** — all behavior from config
+- **Zero hardcoded project knowledge** — all behavior comes from config + auto-detection
 - **Works out of the box** — sensible defaults, zero config for basic usage
-- **Shell-native** — instant startup, no runtime dependencies beyond bash
-- **Graceful degradation** — works without tmux, gum, or gh (with reduced features)
+- **Shell-native** — instant startup, no runtime dependencies beyond bash 4+
+- **Graceful degradation** — works without tmux (no persistence), gum (basic prompts), or gh (no merge PRs)
 - **Composable** — use just hooks, just sessions, or just merge queue independently
+- **Security-conscious** — no eval on user input, path validation before rm, POSIX hooks, sanitized config values
+- **Cross-platform** — macOS + Linux, brew + apt install hints, BSD/GNU date handling
 
 ### What ClaudeMix Is NOT
 
 - Not a Claude Code fork — it composes on top of Claude's native features
-- Not a prompt framework (that's [SuperClaude](https://github.com/SuperClaude-Org/SuperClaude_Framework)'s job)
+- Not a prompt framework — that's [SuperClaude](https://github.com/SuperClaude-Org/SuperClaude_Framework)'s job
 - Not a CI/CD tool — that's GitHub Actions' job
 
 ### Layer Model
@@ -265,26 +298,46 @@ source ~/.claudemix/completions/claudemix.bash
 alias cmx="claudemix"
 ```
 
-### Replacing an existing `claudev` alias
+### Working with terminal multiplexers
 
-If you currently have `alias claudev="claude --dangerously-skip-permissions --verbose"`, replace it:
-
-```bash
-# Remove old alias, add claudemix to PATH
-# Your claude_flags in .claudemix.yml handles the --dangerously-skip-permissions flag
-```
-
-### Working with Ghostty splits
-
-ClaudeMix works great with terminal multiplexers. Run `claudemix <name>` in each Ghostty split — each gets its own isolated worktree.
+ClaudeMix works great with Ghostty splits, iTerm2 tabs, or any terminal multiplexer. Run `claudemix <name>` in each pane — each gets its own isolated worktree.
 
 ### Without tmux
 
-ClaudeMix works without tmux. Sessions run in the foreground (no persistence). Install tmux for session persistence: `brew install tmux`.
+ClaudeMix works without tmux — sessions run in the foreground (no persistence). Install tmux for session persistence: `brew install tmux` (macOS) or `apt install tmux` (Linux).
+
+### Debug mode
+
+```bash
+CLAUDEMIX_DEBUG=1 claudemix ls
+```
+
+## Roadmap
+
+- [ ] `claudemix status` — dashboard view with session health, branch state, and resource usage
+- [ ] `claudemix log <name>` — view Claude session output history
+- [ ] `claudemix diff` — show combined diff across all active session branches
+- [ ] `claudemix sync` — rebase all session branches onto latest base branch
+- [ ] `claudemix export` — export session metadata for team sharing
+- [ ] Fish shell completions
+- [ ] Homebrew formula (`brew install claudemix`)
+- [ ] Session templates (pre-configured Claude flags + prompts per session type)
+- [ ] Integration with Claude Code's native worktree feature
+- [ ] Conflict detection (warn before two sessions modify the same files)
+- [ ] Resource monitoring (warn when too many sessions are running)
+- [ ] GitLab / Bitbucket support for merge queue (currently GitHub-only)
 
 ## Contributing
 
-PRs welcome. Please follow existing code style (shellcheck-clean bash).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+PRs welcome. Please follow existing code style (shellcheck-clean bash). Key points:
+
+1. All scripts must pass `bash -n` syntax check
+2. Library files (`lib/*.sh`) must not use `set -euo pipefail` (entry point handles that)
+3. Generated hooks must be POSIX-compatible (`#!/bin/sh`, no bashisms)
+4. Never use `eval` on user input — use arrays for command building
+5. Cross-platform: test on both macOS and Linux
 
 ## License
 

@@ -1,14 +1,12 @@
-#!/usr/bin/env bash
 # ClaudeMix — tui.sh
 # Interactive TUI menus using gum (with fallback to basic prompts).
-# Sourced by other modules. Never executed directly.
+# Sourced by bin/claudemix. Never executed directly.
 
 # ── Main Menu ────────────────────────────────────────────────────────────────
 
-# Show the interactive main menu.
+# Show the interactive main menu loop.
 tui_main_menu() {
   ensure_claudemix_dir
-  load_config
 
   while true; do
     local action
@@ -32,10 +30,10 @@ tui_main_menu() {
 # ── Action Chooser ───────────────────────────────────────────────────────────
 
 _tui_choose_action() {
-  # Count active sessions for display
+  # Count active sessions
   local session_count=0
-  while IFS= read -r _; do
-    ((session_count++))
+  while IFS= read -r _line; do
+    session_count=$((session_count + 1))
   done < <(session_list "names")
 
   local header="ClaudeMix v${CLAUDEMIX_VERSION}"
@@ -57,46 +55,43 @@ _tui_choose_action() {
       "Git hooks" \
       "Init config" \
       "Quit" \
-    )" || return 0
+    )" || { printf 'quit'; return 0; }
 
     case "$choice" in
-      "New session")        echo "new" ;;
-      "Attach to session")  echo "attach" ;;
-      "List sessions")      echo "list" ;;
-      "Merge queue")        echo "merge" ;;
-      "Cleanup merged")     echo "cleanup" ;;
-      "Kill session")       echo "kill" ;;
-      "Git hooks")          echo "hooks" ;;
-      "Init config")        echo "init" ;;
-      "Quit")               echo "quit" ;;
+      "New session")        printf 'new' ;;
+      "Attach to session")  printf 'attach' ;;
+      "List sessions")      printf 'list' ;;
+      "Merge queue")        printf 'merge' ;;
+      "Cleanup merged")     printf 'cleanup' ;;
+      "Kill session")       printf 'kill' ;;
+      "Git hooks")          printf 'hooks' ;;
+      "Init config")        printf 'init' ;;
+      "Quit")               printf 'quit' ;;
     esac
   else
-    echo ""
-    echo "${BOLD}$header${RESET}"
-    echo ""
-    echo "  1) New session"
-    echo "  2) Attach to session"
-    echo "  3) List sessions"
-    echo "  4) Merge queue"
-    echo "  5) Cleanup merged"
-    echo "  6) Kill session"
-    echo "  7) Git hooks"
-    echo "  8) Init config"
-    echo "  9) Quit"
-    echo ""
-    echo -n "Choose: "
+    printf '\n%s\n\n' "${BOLD}$header${RESET}"
+    printf '  1) New session\n'
+    printf '  2) Attach to session\n'
+    printf '  3) List sessions\n'
+    printf '  4) Merge queue\n'
+    printf '  5) Cleanup merged\n'
+    printf '  6) Kill session\n'
+    printf '  7) Git hooks\n'
+    printf '  8) Init config\n'
+    printf '  9) Quit\n\n'
+    printf 'Choose: '
     read -r num
     case "$num" in
-      1) echo "new" ;;
-      2) echo "attach" ;;
-      3) echo "list" ;;
-      4) echo "merge" ;;
-      5) echo "cleanup" ;;
-      6) echo "kill" ;;
-      7) echo "hooks" ;;
-      8) echo "init" ;;
-      9|q) echo "quit" ;;
-      *) echo "quit" ;;
+      1) printf 'new' ;;
+      2) printf 'attach' ;;
+      3) printf 'list' ;;
+      4) printf 'merge' ;;
+      5) printf 'cleanup' ;;
+      6) printf 'kill' ;;
+      7) printf 'hooks' ;;
+      8) printf 'init' ;;
+      9|q) printf 'quit' ;;
+      *) printf 'quit' ;;
     esac
   fi
 }
@@ -114,23 +109,18 @@ _tui_new_session() {
       --width=50 \
     )" || return 0
   else
-    echo -n "Session name: "
+    printf 'Session name: '
     read -r name
   fi
 
-  name="$(sanitize_name "$name")"
-  if [[ -z "$name" ]]; then
-    log_warn "No name provided."
-    return 0
-  fi
-
+  name="$(sanitize_name "${name:-}")" || { log_warn "Invalid name."; return 0; }
   session_create "$name"
 }
 
 # ── Attach Session ───────────────────────────────────────────────────────────
 
 _tui_attach_session() {
-  local names=()
+  local -a names=()
   while IFS= read -r n; do
     [[ -n "$n" ]] && names+=("$n")
   done < <(session_list "names")
@@ -145,13 +135,13 @@ _tui_attach_session() {
   if gum_available; then
     selected="$(printf '%s\n' "${names[@]}" | gum choose --header "Attach to session")" || return 0
   else
-    echo "Sessions:"
-    local i=1
+    printf 'Sessions:\n'
+    local idx=1
     for n in "${names[@]}"; do
-      echo "  $i) $n"
-      ((i++))
+      printf '  %d) %s\n' "$idx" "$n"
+      idx=$((idx + 1))
     done
-    echo -n "Choose: "
+    printf 'Choose: '
     read -r num
     if [[ "$num" =~ ^[0-9]+$ ]] && (( num >= 1 && num <= ${#names[@]} )); then
       selected="${names[$((num-1))]}"
@@ -166,7 +156,7 @@ _tui_attach_session() {
 # ── Kill Session ─────────────────────────────────────────────────────────────
 
 _tui_kill_session() {
-  local names=()
+  local -a names=()
   while IFS= read -r n; do
     [[ -n "$n" ]] && names+=("$n")
   done < <(session_list "names")
@@ -181,14 +171,13 @@ _tui_kill_session() {
   if gum_available; then
     selected="$(printf '%s\n' "${names[@]}" "ALL" | gum choose --header "Kill session")" || return 0
   else
-    echo "Sessions:"
-    local i=1
+    printf 'Sessions:\n'
+    local idx=1
     for n in "${names[@]}"; do
-      echo "  $i) $n"
-      ((i++))
+      printf '  %d) %s\n' "$idx" "$n"
+      idx=$((idx + 1))
     done
-    echo "  a) ALL"
-    echo -n "Choose: "
+    printf '  a) ALL\nChoose: '
     read -r num
     if [[ "$num" == "a" ]]; then
       selected="ALL"
@@ -206,7 +195,7 @@ _tui_kill_session() {
         keep=""
       fi
     else
-      echo -n "Also remove worktree and branch? [y/N] "
+      printf 'Also remove worktree and branch? [y/N] '
       read -r yn
       [[ "$yn" =~ ^[Yy] ]] && keep=""
     fi
@@ -229,9 +218,7 @@ _tui_cleanup() {
     log_info "No merged worktrees to clean up."
   fi
 
-  # Also prune git worktrees
   git -C "$PROJECT_ROOT" worktree prune 2>/dev/null || true
-
   _tui_pause
 }
 
@@ -248,12 +235,7 @@ _tui_hooks_menu() {
       "Back" \
     )" || return 0
   else
-    echo ""
-    echo "  1) Install hooks"
-    echo "  2) Uninstall hooks"
-    echo "  3) Show status"
-    echo "  4) Back"
-    echo -n "Choose: "
+    printf '\n  1) Install hooks\n  2) Uninstall hooks\n  3) Show status\n  4) Back\nChoose: '
     read -r num
     case "$num" in
       1) action="Install hooks" ;;
@@ -283,51 +265,22 @@ _tui_init() {
     if gum_available; then
       gum confirm "Overwrite?" || return 0
     else
-      echo -n "Overwrite? [y/N] "
+      printf 'Overwrite? [y/N] '
       read -r yn
       [[ "$yn" =~ ^[Yy] ]] || return 0
     fi
   fi
 
-  # Auto-detect and write config
   _detect_defaults
-
-  cat > "$config_path" << EOF
-# ClaudeMix configuration
-# https://github.com/Draidel/ClaudeMix
-
-# Command to validate code before push (auto-detected)
-validate: ${CFG_VALIDATE:-npm test}
-
-# Branches that cannot be pushed to directly (comma-separated)
-protected_branches: ${CFG_PROTECTED_BRANCHES}
-
-# Target branch for merge queue PRs
-merge_target: ${CFG_MERGE_TARGET}
-
-# Merge strategy: squash, merge, or rebase
-merge_strategy: ${CFG_MERGE_STRATEGY}
-
-# Base branch for new worktrees
-base_branch: ${CFG_BASE_BRANCH}
-
-# Extra flags to pass to Claude Code
-claude_flags: ${CFG_CLAUDE_FLAGS}
-EOF
-
+  write_default_config "$config_path"
   log_ok "Config written to $config_path"
   _tui_pause
 }
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+# Pause and wait for user to press Enter.
 _tui_pause() {
-  if gum_available; then
-    echo ""
-    gum input --placeholder "Press Enter to continue..." --width=40 > /dev/null 2>&1 || true
-  else
-    echo ""
-    echo -n "Press Enter to continue..."
-    read -r
-  fi
+  printf '\nPress Enter to continue...'
+  read -r
 }

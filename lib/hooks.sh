@@ -1,18 +1,16 @@
-#!/usr/bin/env bash
 # ClaudeMix — hooks.sh
 # Git hooks installation and management.
-# Supports husky (preferred) or direct .git/hooks installation.
-# Sourced by other modules. Never executed directly.
+# Supports husky (preferred for Node.js projects) or direct .git/hooks.
+# Sourced by bin/claudemix. Never executed directly.
 
 # ── Hooks Operations ─────────────────────────────────────────────────────────
 
 # Install git hooks for the current project.
-# Detects whether to use husky or direct installation.
 hooks_install() {
   require_project
 
   local method="direct"
-  if _hooks_should_use_husky; then
+  if [[ -f "$PROJECT_ROOT/package.json" ]]; then
     method="husky"
   fi
 
@@ -26,20 +24,17 @@ hooks_install() {
   log_ok "Git hooks installed"
 }
 
-# Remove ClaudeMix git hooks from the current project.
+# Remove ClaudeMix git hooks.
 hooks_uninstall() {
   require_project
 
   if [[ -d "$PROJECT_ROOT/.husky" ]]; then
-    # Check if we installed husky or if it was pre-existing
-    if grep -q "ClaudeMix" "$PROJECT_ROOT/.husky/pre-commit" 2>/dev/null; then
-      rm -f "$PROJECT_ROOT/.husky/pre-commit"
-      log_ok "Removed .husky/pre-commit"
-    fi
-    if grep -q "ClaudeMix" "$PROJECT_ROOT/.husky/pre-push" 2>/dev/null; then
-      rm -f "$PROJECT_ROOT/.husky/pre-push"
-      log_ok "Removed .husky/pre-push"
-    fi
+    for hook in pre-commit pre-push; do
+      if [[ -f "$PROJECT_ROOT/.husky/$hook" ]] && grep -q "ClaudeMix" "$PROJECT_ROOT/.husky/$hook" 2>/dev/null; then
+        rm -f "$PROJECT_ROOT/.husky/$hook"
+        log_ok "Removed .husky/$hook"
+      fi
+    done
   fi
 
   local hooks_dir
@@ -62,8 +57,7 @@ hooks_status() {
   hooks_dir="$(git -C "$PROJECT_ROOT" rev-parse --git-dir)/hooks"
   local husky_dir="$PROJECT_ROOT/.husky"
 
-  echo "${BOLD}Git Hooks Status${RESET}"
-  echo ""
+  printf '%s\n\n' "${BOLD}Git Hooks Status${RESET}"
 
   for hook in pre-commit pre-push; do
     local status="${RED}not installed${RESET}"
@@ -83,29 +77,18 @@ hooks_status() {
       fi
     fi
 
-    printf "  %-14s %b %s\n" "$hook" "$status" "$source"
+    printf '  %-14s %b %s\n' "$hook" "$status" "$source"
   done
 }
 
 # ── Husky Installation ───────────────────────────────────────────────────────
 
-_hooks_should_use_husky() {
-  # Use husky if: it's a Node.js project
-  [[ -f "$PROJECT_ROOT/package.json" ]]
-}
-
 _hooks_install_husky() {
-  local pkg_manager="npm"
-  if [[ -f "$PROJECT_ROOT/pnpm-lock.yaml" ]] || [[ -f "$PROJECT_ROOT/pnpm-workspace.yaml" ]]; then
-    pkg_manager="pnpm"
-  elif [[ -f "$PROJECT_ROOT/yarn.lock" ]]; then
-    pkg_manager="yarn"
-  elif [[ -f "$PROJECT_ROOT/bun.lockb" ]]; then
-    pkg_manager="bun"
-  fi
+  local pkg_manager
+  pkg_manager="$(detect_pkg_manager "$PROJECT_ROOT")"
 
   # Install husky if not present
-  if ! [[ -d "$PROJECT_ROOT/node_modules/husky" ]]; then
+  if [[ ! -d "$PROJECT_ROOT/node_modules/husky" ]]; then
     log_info "Installing husky..."
     case "$pkg_manager" in
       pnpm) (cd "$PROJECT_ROOT" && pnpm add -D -w husky 2>/dev/null) ;;
@@ -116,7 +99,7 @@ _hooks_install_husky() {
   fi
 
   # Install lint-staged if not present
-  if ! [[ -d "$PROJECT_ROOT/node_modules/lint-staged" ]]; then
+  if [[ ! -d "$PROJECT_ROOT/node_modules/lint-staged" ]]; then
     log_info "Installing lint-staged..."
     case "$pkg_manager" in
       pnpm) (cd "$PROJECT_ROOT" && pnpm add -D -w lint-staged 2>/dev/null) ;;
@@ -131,29 +114,25 @@ _hooks_install_husky() {
   (cd "$PROJECT_ROOT" && npx husky init 2>/dev/null) || true
   mkdir -p "$PROJECT_ROOT/.husky"
 
-  # Add prepare script if missing
+  # Add prepare script if missing (using stdin to avoid path injection)
   if ! grep -q '"prepare"' "$PROJECT_ROOT/package.json" 2>/dev/null; then
     log_info "Adding prepare script to package.json..."
-    # Use node for reliable JSON manipulation
-    node -e "
-      const fs = require('fs');
-      const pkg = JSON.parse(fs.readFileSync('$PROJECT_ROOT/package.json', 'utf8'));
-      pkg.scripts = pkg.scripts || {};
-      pkg.scripts.prepare = 'husky';
-      fs.writeFileSync('$PROJECT_ROOT/package.json', JSON.stringify(pkg, null, 2) + '\n');
-    " 2>/dev/null || log_warn "Could not add prepare script automatically"
+    (cd "$PROJECT_ROOT" && node << 'NODESCRIPT'
+const fs = require('fs');
+const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+pkg.scripts = pkg.scripts || {};
+pkg.scripts.prepare = 'husky';
+fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+NODESCRIPT
+    ) 2>/dev/null || log_warn "Could not add prepare script automatically"
   fi
 
-  # Write pre-commit hook
   _hooks_write_pre_commit_husky
-
-  # Write pre-push hook
-  _hooks_write_pre_push_husky
-
-  # Add lint-staged config if missing
+  _hooks_write_pre_push "$PROJECT_ROOT/.husky/pre-push"
   _hooks_ensure_lint_staged_config
 }
 
+# Write the pre-commit hook for husky.
 _hooks_write_pre_commit_husky() {
   cat > "$PROJECT_ROOT/.husky/pre-commit" << 'HOOK'
 # ClaudeMix pre-commit hook — lint staged files
@@ -163,79 +142,90 @@ HOOK
   log_ok "Created .husky/pre-commit"
 }
 
-_hooks_write_pre_push_husky() {
-  # Read protected branches from config
-  local branches="$CFG_PROTECTED_BRANCHES"
+# Write a POSIX-compatible pre-push hook to a given path.
+# Uses the current CFG_PROTECTED_BRANCHES and CFG_VALIDATE values.
+# Args: $1 = output path
+_hooks_write_pre_push() {
+  local output_path="$1"
 
-  cat > "$PROJECT_ROOT/.husky/pre-push" << HOOK
+  # Sanitize protected branches (only safe chars: alphanumeric, commas, hyphens, underscores, slashes, dots)
+  local safe_branches
+  safe_branches="$(printf '%s' "$CFG_PROTECTED_BRANCHES" | tr -cd 'a-zA-Z0-9,_./-')"
+
+  # Write POSIX-compatible hook (no bash arrays, no bashisms)
+  cat > "$output_path" << 'HOOKHEAD'
+#!/bin/sh
 # ClaudeMix pre-push hook — branch guard + validation
 
-# ── Branch Guard ──
-branch=\$(git symbolic-ref --short HEAD 2>/dev/null)
-protected_branches="${branches}"
+branch=$(git symbolic-ref --short HEAD 2>/dev/null || true)
+if [ -z "$branch" ]; then
+  exit 0
+fi
 
-IFS=',' read -ra BRANCHES <<< "\$protected_branches"
-for protected in "\${BRANCHES[@]}"; do
-  protected=\$(echo "\$protected" | tr -d '[:space:]')
-  if [ "\$branch" = "\$protected" ]; then
-    echo "❌ Direct push to '\$branch' is blocked by ClaudeMix."
-    echo "   Create a feature branch: git checkout -b fix/description"
+HOOKHEAD
+
+  # Embed the protected branches as a literal string
+  printf 'protected_branches="%s"\n\n' "$safe_branches" >> "$output_path"
+
+  cat >> "$output_path" << 'HOOKGUARD'
+# POSIX-compatible branch guard (no bash arrays needed)
+OLD_IFS="$IFS"
+IFS=','
+for p in $protected_branches; do
+  IFS="$OLD_IFS"
+  p=$(echo "$p" | tr -d '[:space:]')
+  if [ "$branch" = "$p" ]; then
+    echo "Error: Direct push to '$branch' is blocked by ClaudeMix."
+    echo "  Create a feature branch: git checkout -b fix/description"
     exit 1
   fi
 done
+IFS="$OLD_IFS"
+HOOKGUARD
 
-# ── Validation ──
-HOOK
-
-  # Add validate command if configured
+  # Append validate command if configured
   if [[ -n "$CFG_VALIDATE" ]]; then
-    cat >> "$PROJECT_ROOT/.husky/pre-push" << HOOK
-echo "🔍 Running validation before push..."
-$CFG_VALIDATE
-HOOK
+    printf '\necho "Running validation before push..."\n' >> "$output_path"
+    printf '%s\n' "$CFG_VALIDATE" >> "$output_path"
   fi
 
-  chmod +x "$PROJECT_ROOT/.husky/pre-push"
-  log_ok "Created .husky/pre-push (guards: $branches)"
+  chmod +x "$output_path"
+  log_ok "Created pre-push hook (guards: $safe_branches)"
 }
 
+# Ensure a lint-staged configuration exists.
 _hooks_ensure_lint_staged_config() {
-  # Check if lint-staged config already exists
+  # Check all known config locations
   if grep -q '"lint-staged"' "$PROJECT_ROOT/package.json" 2>/dev/null; then
     log_debug "lint-staged config already in package.json"
     return 0
   fi
-  if [[ -f "$PROJECT_ROOT/.lintstagedrc" ]] || \
-     [[ -f "$PROJECT_ROOT/.lintstagedrc.json" ]] || \
-     [[ -f "$PROJECT_ROOT/.lintstagedrc.yml" ]] || \
-     [[ -f "$PROJECT_ROOT/lint-staged.config.js" ]] || \
-     [[ -f "$PROJECT_ROOT/lint-staged.config.mjs" ]]; then
-    log_debug "lint-staged config file already exists"
-    return 0
-  fi
+  for cfg in .lintstagedrc .lintstagedrc.json .lintstagedrc.yml lint-staged.config.js lint-staged.config.mjs; do
+    if [[ -f "$PROJECT_ROOT/$cfg" ]]; then
+      log_debug "lint-staged config file already exists: $cfg"
+      return 0
+    fi
+  done
 
-  # Auto-detect and add lint-staged config to package.json
   log_info "Adding lint-staged configuration..."
 
   local lint_cmd="eslint --fix"
-  local format_cmd="prettier --write"
-  local ts_glob='*.{ts,tsx}'
-  local style_glob='*.{json,md,yml,yaml}'
-
-  # Check if eslint flat config exists
+  # Detect flat config
   if [[ -f "$PROJECT_ROOT/eslint.config.mjs" ]] || [[ -f "$PROJECT_ROOT/eslint.config.js" ]]; then
     lint_cmd="eslint --fix --no-warn-ignored"
   fi
 
-  node -e "
-    const fs = require('fs');
-    const pkg = JSON.parse(fs.readFileSync('$PROJECT_ROOT/package.json', 'utf8'));
-    pkg['lint-staged'] = {
-      '$ts_glob': '$lint_cmd',
-      '$style_glob': '$format_cmd'
-    };
-    fs.writeFileSync('$PROJECT_ROOT/package.json', JSON.stringify(pkg, null, 2) + '\n');
-  " 2>/dev/null || log_warn "Could not add lint-staged config automatically"
+  # Use stdin-based node script to avoid path injection
+  (cd "$PROJECT_ROOT" && LINT_CMD="$lint_cmd" node << 'NODESCRIPT'
+const fs = require('fs');
+const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+pkg['lint-staged'] = {
+  '*.{ts,tsx}': process.env.LINT_CMD || 'eslint --fix',
+  '*.{json,md,yml,yaml}': 'prettier --write'
+};
+fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+NODESCRIPT
+  ) 2>/dev/null || log_warn "Could not add lint-staged config automatically"
 
   log_ok "lint-staged config added to package.json"
 }
@@ -247,46 +237,18 @@ _hooks_install_direct() {
   hooks_dir="$(git -C "$PROJECT_ROOT" rev-parse --git-dir)/hooks"
   mkdir -p "$hooks_dir"
 
-  # Pre-commit (basic — no lint-staged)
+  # Pre-commit hook (basic — no lint-staged)
   if [[ -n "$CFG_VALIDATE" ]]; then
-    cat > "$hooks_dir/pre-commit" << HOOK
+    cat > "$hooks_dir/pre-commit" << 'HOOK'
 #!/bin/sh
 # ClaudeMix pre-commit hook
-echo "🔍 Running pre-commit validation..."
-$CFG_VALIDATE
+echo "Running pre-commit validation..."
 HOOK
+    printf '%s\n' "$CFG_VALIDATE" >> "$hooks_dir/pre-commit"
     chmod +x "$hooks_dir/pre-commit"
     log_ok "Created pre-commit hook"
   fi
 
-  # Pre-push (branch guard + validate)
-  local branches="$CFG_PROTECTED_BRANCHES"
-  cat > "$hooks_dir/pre-push" << HOOK
-#!/bin/sh
-# ClaudeMix pre-push hook — branch guard + validation
-
-branch=\$(git symbolic-ref --short HEAD 2>/dev/null)
-protected_branches="${branches}"
-
-IFS=',' read -ra BRANCHES <<< "\$protected_branches"
-for protected in "\${BRANCHES[@]}"; do
-  protected=\$(echo "\$protected" | tr -d '[:space:]')
-  if [ "\$branch" = "\$protected" ]; then
-    echo "❌ Direct push to '\$branch' is blocked by ClaudeMix."
-    echo "   Create a feature branch: git checkout -b fix/description"
-    exit 1
-  fi
-done
-HOOK
-
-  if [[ -n "$CFG_VALIDATE" ]]; then
-    cat >> "$hooks_dir/pre-push" << HOOK
-
-echo "🔍 Running validation before push..."
-$CFG_VALIDATE
-HOOK
-  fi
-
-  chmod +x "$hooks_dir/pre-push"
-  log_ok "Created pre-push hook (guards: $branches)"
+  # Pre-push hook (POSIX-compatible branch guard + validate)
+  _hooks_write_pre_push "$hooks_dir/pre-push"
 }
