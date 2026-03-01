@@ -62,7 +62,12 @@ main() {
 
   # All other commands need a project context
   require_project
-  check_dependencies
+  # In TUI mode, optional-dep warnings show in the menu header instead
+  if [[ -z "$command" ]]; then
+    check_dependencies "quiet"
+  else
+    check_dependencies
+  fi
   load_config
 
   case "$command" in

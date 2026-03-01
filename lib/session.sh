@@ -264,3 +264,56 @@ _session_save_meta() {
     printf 'base_branch=%s\n' "$CFG_BASE_BRANCH"
   } > "$meta_file"
 }
+
+# ── Validation ─────────────────────────────────────────────────────────────
+
+# Run CFG_VALIDATE in a session's worktree and cache the result.
+# Args: $1 = session name
+# Returns: 0 if validation passed, 1 if failed, 2 if no validate command
+session_validate() {
+  local name="$1"
+  local wt_path
+  wt_path="$(worktree_path "$name")"
+  local cache_file="$PROJECT_ROOT/$CLAUDEMIX_SESSIONS_DIR/${name}.validate"
+
+  if [[ -z "$CFG_VALIDATE" ]]; then
+    printf 'status=none\ntimestamp=%s\n' "$(now_iso)" > "$cache_file"
+    return 2
+  fi
+
+  if ! worktree_exists "$name"; then
+    log_error "Worktree not found for session '$name'"
+    return 1
+  fi
+
+  log_info "Validating ${CYAN}$name${RESET} (${CFG_VALIDATE})..."
+  local out
+  out="$(mktemp)"
+  if (cd "$wt_path" && bash -c "$CFG_VALIDATE") >"$out" 2>&1; then
+    rm -f "$out"
+    printf 'status=pass\ntimestamp=%s\n' "$(now_iso)" > "$cache_file"
+    log_ok "Validation passed for ${CYAN}$name${RESET}"
+    return 0
+  else
+    printf 'status=fail\ntimestamp=%s\n' "$(now_iso)" > "$cache_file"
+    log_error "Validation failed for ${CYAN}$name${RESET}"
+    tail -n 10 "$out" >&2
+    rm -f "$out"
+    return 1
+  fi
+}
+
+# Read cached validation status for a session.
+# Args: $1 = session name
+# Output: "pass", "fail", "none", or "unknown"
+session_validate_status() {
+  local name="$1"
+  local cache_file="$PROJECT_ROOT/$CLAUDEMIX_SESSIONS_DIR/${name}.validate"
+
+  if [[ ! -f "$cache_file" ]]; then
+    printf 'unknown'
+    return 0
+  fi
+
+  grep '^status=' "$cache_file" 2>/dev/null | cut -d= -f2- || printf 'unknown'
+}

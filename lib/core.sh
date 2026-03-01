@@ -286,6 +286,7 @@ has_cmd() {
 
 # Check required and optional dependencies. Dies if required ones are missing.
 check_dependencies() {
+  local quiet_optional="${1:-}"
   local missing=()
 
   if ! has_cmd git; then
@@ -298,6 +299,11 @@ check_dependencies() {
 
   if (( ${#missing[@]} > 0 )); then
     die "Missing required dependencies: ${missing[*]}"
+  fi
+
+  # In TUI mode, optional-dep warnings show in the menu header instead
+  if [[ "$quiet_optional" == "quiet" ]]; then
+    return 0
   fi
 
   # Warn about optional dependencies with cross-platform install hints
