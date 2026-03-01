@@ -13,6 +13,8 @@ readonly CLAUDEMIX_WORKTREES_DIR="$CLAUDEMIX_DIR/worktrees"
 readonly CLAUDEMIX_SESSIONS_DIR="$CLAUDEMIX_DIR/sessions"
 readonly CLAUDEMIX_BRANCH_PREFIX="claudemix/"
 readonly CLAUDEMIX_TMUX_PREFIX="claudemix-"
+readonly CLAUDEMIX_GLOBAL_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claudemix"
+readonly CLAUDEMIX_GLOBAL_CONFIG="${CLAUDEMIX_GLOBAL_CONFIG_DIR}/config.yaml"
 
 # ── Colors ───────────────────────────────────────────────────────────────────
 
@@ -116,9 +118,51 @@ declare -g CFG_PANES=""
 declare -g CFG_EDITOR="${EDITOR:-vim}"
 declare -g CFG_DASHBOARD_REFRESH="2"
 
+# Load global user config from ~/.config/claudemix/config.yaml.
+# Sets CFG_* defaults that project config can override.
+_load_global_config() {
+  if [[ ! -f "$CLAUDEMIX_GLOBAL_CONFIG" ]]; then
+    log_debug "No global config found at $CLAUDEMIX_GLOBAL_CONFIG"
+    return 0
+  fi
+
+  log_debug "Loading global config from $CLAUDEMIX_GLOBAL_CONFIG"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%%#*}"
+    [[ -z "${line// /}" ]] && continue
+
+    if [[ "$line" =~ ^[[:space:]]*([a-zA-Z_][a-zA-Z0-9_]*)[[:space:]]*:[[:space:]]*(.*) ]]; then
+      local key="${BASH_REMATCH[1]}"
+      local value="${BASH_REMATCH[2]}"
+      value="${value%"${value##*[![:space:]]}"}"
+
+      case "$key" in
+        validate)            CFG_VALIDATE="$value" ;;
+        protected_branches)  CFG_PROTECTED_BRANCHES="$value" ;;
+        merge_target)        CFG_MERGE_TARGET="$value" ;;
+        merge_strategy)      CFG_MERGE_STRATEGY="$value" ;;
+        claude_flags)        CFG_CLAUDE_FLAGS="$value" ;;
+        base_branch)         CFG_BASE_BRANCH="$value" ;;
+        worktree_dir)        CFG_WORKTREE_DIR="$value" ;;
+        post_create)         CFG_POST_CREATE="$value" ;;
+        pre_merge)           CFG_PRE_MERGE="$value" ;;
+        pre_remove)          CFG_PRE_REMOVE="$value" ;;
+        copy_files)          CFG_COPY_FILES="$value" ;;
+        symlink_files)       CFG_SYMLINK_FILES="$value" ;;
+        panes)               CFG_PANES="$value" ;;
+        editor)              CFG_EDITOR="$value" ;;
+        dashboard_refresh)   CFG_DASHBOARD_REFRESH="$value" ;;
+        *)                   log_debug "Unknown global config key: $key" ;;
+      esac
+    fi
+  done < "$CLAUDEMIX_GLOBAL_CONFIG"
+}
+
 # Parse a flat YAML config file (key: value, no nesting).
 # Handles comments, blank lines, and colons in values.
 load_config() {
+  _load_global_config
   local config_path="$PROJECT_ROOT/$CLAUDEMIX_CONFIG_FILE"
 
   if [[ ! -f "$config_path" ]]; then
@@ -347,6 +391,21 @@ write_default_config() {
     printf '# "claude" is replaced with the Claude command. Default: claude\n'
     printf '# panes: npm run dev | claude\n'
   } > "$config_path"
+}
+
+# Write global config with defaults.
+write_global_config() {
+  mkdir -p "$CLAUDEMIX_GLOBAL_CONFIG_DIR"
+  {
+    printf '# ClaudeMix global configuration\n'
+    printf '# Personal defaults — project .claudemix.yml overrides these.\n'
+    printf '# https://github.com/Draidel/ClaudeMix\n\n'
+    printf '# editor: vim\n'
+    printf '# dashboard_refresh: 2\n'
+    printf '# claude_flags: --dangerously-skip-permissions\n'
+    printf '# merge_strategy: squash\n'
+    printf '# panes: claude\n'
+  } > "$CLAUDEMIX_GLOBAL_CONFIG"
 }
 
 # ── Dependency Checks ────────────────────────────────────────────────────────
