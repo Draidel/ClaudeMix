@@ -7,11 +7,43 @@
 # ── Session Operations ───────────────────────────────────────────────────────
 
 # Create a new session and launch Claude Code in it.
-# Args: $1 = session name, remaining args = extra claude flags
+# Args: $1 = session name, remaining args = extra claude flags or --with-changes/--pr/--panes
 session_create() {
   local name
   name="$(sanitize_name "$1")"
   shift
+
+  # Parse ClaudeMix flags vs Claude flags
+  local with_changes=false
+  local pr_number=""
+  local panes_override=""
+  local -a extra_flags=()
+  while (( $# > 0 )); do
+    case "$1" in
+      --with-changes)
+        with_changes=true
+        ;;
+      --pr)
+        shift
+        pr_number="${1:-}"
+        [[ -z "$pr_number" ]] && die "Usage: claudemix <name> --pr <number>"
+        ;;
+      --pr=*)
+        pr_number="${1#--pr=}"
+        ;;
+      --panes)
+        shift
+        panes_override="${1:-}"
+        ;;
+      --panes=*)
+        panes_override="${1#--panes=}"
+        ;;
+      *)
+        extra_flags+=("$1")
+        ;;
+    esac
+    shift
+  done
 
   ensure_claudemix_dir
 
@@ -22,9 +54,41 @@ session_create() {
     return $?
   fi
 
+  # Handle --with-changes: stash uncommitted work
+  local stashed=false
+  if $with_changes; then
+    if git -C "$PROJECT_ROOT" diff --quiet 2>/dev/null && git -C "$PROJECT_ROOT" diff --cached --quiet 2>/dev/null; then
+      log_warn "No uncommitted changes to move."
+    else
+      log_info "Stashing uncommitted changes..."
+      git -C "$PROJECT_ROOT" stash push -u -m "claudemix: moving to $name" || die "Failed to stash changes"
+      stashed=true
+    fi
+  fi
+
+  # Handle --pr: checkout PR branch
+  if [[ -n "$pr_number" ]]; then
+    if ! has_cmd gh; then
+      die "GitHub CLI (gh) required for --pr. Install: brew install gh"
+    fi
+    local branch="${CLAUDEMIX_BRANCH_PREFIX}${name}"
+    log_info "Checking out PR #${pr_number} as ${CYAN}$branch${RESET}..."
+    gh pr checkout "$pr_number" --branch "$branch" 2>/dev/null || die "Failed to checkout PR #$pr_number"
+  fi
+
   # Create isolated worktree
   worktree_create "$name"
   local wt_path="$WORKTREE_PATH"
+
+  # Handle --with-changes: pop stash in new worktree
+  if $stashed; then
+    log_info "Applying stashed changes to worktree..."
+    if ! (cd "$wt_path" && git stash pop 2>/dev/null); then
+      log_warn "Stash apply had conflicts. Resolve them in the worktree."
+    else
+      log_ok "Uncommitted changes moved to worktree"
+    fi
+  fi
 
   # Build claude command as an array (safe — no eval)
   local -a claude_cmd=(claude)
@@ -33,17 +97,23 @@ session_create() {
     read -ra flags <<< "$CFG_CLAUDE_FLAGS"
     claude_cmd+=("${flags[@]}")
   fi
-  if (( $# > 0 )); then
-    claude_cmd+=("$@")
+  if (( ${#extra_flags[@]} > 0 )); then
+    claude_cmd+=("${extra_flags[@]}")
   fi
 
+  # Determine pane layout
+  local panes="${panes_override:-$CFG_PANES}"
+
   # Persist session metadata
-  _session_save_meta "$name" "$wt_path"
+  _session_save_meta "$name" "$wt_path" "$panes"
 
   # Launch in tmux (persistent) or foreground (ephemeral)
   if tmux_available; then
-    _session_launch_tmux "$name" "$wt_path" "${claude_cmd[@]}"
+    _session_launch_tmux "$name" "$wt_path" "$panes" "${claude_cmd[@]}"
   else
+    if [[ -n "$panes" ]] && [[ "$panes" != "claude" ]]; then
+      log_warn "Pane layouts require tmux. Only Claude will run."
+    fi
     _session_launch_direct "$name" "$wt_path" "${claude_cmd[@]}"
   fi
 }
@@ -209,31 +279,65 @@ _session_is_running() {
   tmux_available && tmux has-session -t "=$tmux_name" 2>/dev/null
 }
 
-# Launch Claude in a new tmux session.
-# Args: $1 = name, $2 = worktree path, $3+ = claude command array
+# Launch session in tmux with optional pane layout.
+# Args: $1 = name, $2 = worktree path, $3 = pane layout string, $4+ = claude command array
 _session_launch_tmux() {
   local name="$1"
   local wt_path="$2"
-  shift 2
-  local -a cmd=("$@")
+  local panes="$3"
+  shift 3
+  local -a claude_cmd=("$@")
   local tmux_name="${CLAUDEMIX_TMUX_PREFIX}${name}"
 
-  # Build a shell-safe command string for tmux
-  local safe_cmd=""
-  for arg in "${cmd[@]}"; do
-    safe_cmd+="$(printf '%q ' "$arg")"
+  log_info "Launching session ${CYAN}$tmux_name${RESET} in tmux"
+
+  # Parse pane layout
+  local -a pane_dirs=()
+  local -a pane_cmds=()
+  local claude_pane_idx=0
+  local pane_idx=0
+
+  # Build safe claude command string for comparison
+  local safe_claude=""
+  for arg in "${claude_cmd[@]}"; do
+    safe_claude+="$(printf '%q ' "$arg")"
   done
-  safe_cmd="${safe_cmd% }"
+  safe_claude="${safe_claude% }"
 
-  log_info "Launching Claude in tmux session ${CYAN}$tmux_name${RESET}"
+  while IFS=$'\t' read -r direction cmd; do
+    pane_dirs+=("$direction")
+    pane_cmds+=("${cmd}; printf '\\nProcess exited. Press Enter to close.\\n'; read")
+    if [[ "$cmd" == "$safe_claude" ]]; then
+      claude_pane_idx=$pane_idx
+    fi
+    pane_idx=$((pane_idx + 1))
+  done < <(_parse_panes "$panes" "${claude_cmd[@]}")
 
-  local tmux_shell_cmd="${safe_cmd}; printf '\\nClaude exited. Press Enter to close.\\n'; read"
+  # Create session with first pane
+  tmux new-session -d -s "$tmux_name" -c "$wt_path" "${pane_cmds[0]}"
 
+  # Add remaining panes
+  local i=1
+  while (( i < ${#pane_cmds[@]} )); do
+    local split_flag="-h"
+    [[ "${pane_dirs[$i]}" == "v" ]] && split_flag="-v"
+    tmux split-window $split_flag -t "$tmux_name" -c "$wt_path" "${pane_cmds[$i]}"
+    i=$((i + 1))
+  done
+
+  # Balance pane sizes
+  if (( ${#pane_cmds[@]} > 1 )); then
+    tmux select-layout -t "$tmux_name" tiled 2>/dev/null || true
+  fi
+
+  # Select the claude pane
+  tmux select-pane -t "${tmux_name}:.${claude_pane_idx}" 2>/dev/null || true
+
+  # Attach
   if in_tmux; then
-    tmux new-session -d -s "$tmux_name" -c "$wt_path" "$tmux_shell_cmd"
     tmux switch-client -t "=$tmux_name"
   else
-    tmux new-session -s "$tmux_name" -c "$wt_path" "$tmux_shell_cmd"
+    tmux attach-session -t "=$tmux_name"
   fi
 }
 
@@ -250,9 +354,11 @@ _session_launch_direct() {
 }
 
 # Persist session metadata.
+# Args: $1 = name, $2 = worktree path, $3 = panes layout (optional)
 _session_save_meta() {
   local name="$1"
   local wt_path="$2"
+  local panes="${3:-}"
   local meta_file="$PROJECT_ROOT/$CLAUDEMIX_SESSIONS_DIR/${name}.meta"
 
   {
@@ -262,5 +368,77 @@ _session_save_meta() {
     printf 'worktree=%s\n' "$wt_path"
     printf 'tmux_session=%s\n' "${CLAUDEMIX_TMUX_PREFIX}${name}"
     printf 'base_branch=%s\n' "$CFG_BASE_BRANCH"
+    printf 'status=open\n'
+    printf 'panes=%s\n' "$panes"
   } > "$meta_file"
+}
+
+# Parse a pane layout string into structured output.
+# Syntax: "cmd1 / cmd2 | cmd3" means cmd1 stacked over cmd2, side-by-side with cmd3
+# | = vertical split (columns, tmux split-window -h)
+# / = horizontal split (rows, tmux split-window -v)
+# Output: one line per pane: "direction\tcommand"
+#   First pane has direction "first" (it's the initial pane).
+# Args: $1 = pane layout string, $2+ = claude command array
+_parse_panes() {
+  local layout="$1"
+  shift
+  local -a claude_cmd=("$@")
+
+  # Build safe claude command string
+  local safe_claude=""
+  for arg in "${claude_cmd[@]}"; do
+    safe_claude+="$(printf '%q ' "$arg")"
+  done
+  safe_claude="${safe_claude% }"
+
+  # Default: just claude
+  if [[ -z "$layout" ]] || [[ "$layout" == "claude" ]]; then
+    printf 'first\t%s\n' "$safe_claude"
+    return 0
+  fi
+
+  local first=true
+
+  # Split by | first (vertical/column splits)
+  local IFS='|'
+  local -a columns
+  read -ra columns <<< "$layout"
+
+  for col in "${columns[@]}"; do
+    # Trim whitespace
+    col="$(printf '%s' "$col" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [[ -z "$col" ]] && continue
+
+    # Split by / (horizontal/row splits within this column)
+    local old_ifs="$IFS"
+    IFS='/'
+    local -a rows
+    read -ra rows <<< "$col"
+    IFS="$old_ifs"
+
+    for row in "${rows[@]}"; do
+      row="$(printf '%s' "$row" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      [[ -z "$row" ]] && continue
+
+      # Replace "claude" keyword with actual command
+      local cmd="$row"
+      if [[ "$cmd" == "claude" ]]; then
+        cmd="$safe_claude"
+      fi
+
+      if $first; then
+        printf 'first\t%s\n' "$cmd"
+        first=false
+      else
+        # If this row is within a column that has multiple rows, it's horizontal (v)
+        # Otherwise it's a new column, so vertical (h)
+        if (( ${#rows[@]} > 1 )); then
+          printf 'v\t%s\n' "$cmd"
+        else
+          printf 'h\t%s\n' "$cmd"
+        fi
+      fi
+    done
+  done
 }
