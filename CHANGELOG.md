@@ -1,3 +1,16 @@
+# [1.1.0](https://github.com/Draidel/ClaudeMix/compare/v1.0.1...v1.1.0) (2026-03-01)
+
+
+### Bug Fixes
+
+* **formula:** use libexec install for Homebrew compatibility ([3fb6548](https://github.com/Draidel/ClaudeMix/commit/3fb6548aa45245c0037de3da6c8d3de573764c4c))
+
+
+### Features
+
+* **tui:** improve dashboard readability with human-friendly labels ([9639c36](https://github.com/Draidel/ClaudeMix/commit/9639c36e0e9bf3a0db2b811d459f4f8497e7b441))
+* **tui:** replace TUI with ASCII dashboard + hotkey navigation ([a6ce6e2](https://github.com/Draidel/ClaudeMix/commit/a6ce6e23a1be588e1960ba04aa588a624fffb24f))
+
 ## [1.0.1](https://github.com/Draidel/ClaudeMix/compare/v1.0.0...v1.0.1) (2026-02-27)
 
 
