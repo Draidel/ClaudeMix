@@ -17,3 +17,6 @@ Thumbs.db
 # Node.js (dev tooling only)
 node_modules/
 package-lock.json
+
+# ClaudeMix session data
+.claudemix/
