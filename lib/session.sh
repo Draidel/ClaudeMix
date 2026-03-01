@@ -147,6 +147,91 @@ session_attach() {
   fi
 }
 
+# Close a session (kill tmux, keep worktree and branch).
+# Args: $1 = session name
+session_close() {
+  local name
+  name="$(sanitize_name "$1")"
+  local tmux_name="${CLAUDEMIX_TMUX_PREFIX}${name}"
+
+  if ! worktree_exists "$name"; then
+    die "Session '$name' not found (no worktree)."
+  fi
+
+  # Kill tmux session
+  if tmux_available && tmux has-session -t "=$tmux_name" 2>/dev/null; then
+    tmux kill-session -t "=$tmux_name" 2>/dev/null || true
+    log_ok "tmux session ${CYAN}$tmux_name${RESET} closed"
+  else
+    log_info "Session ${CYAN}$name${RESET} has no running tmux session"
+  fi
+
+  # Update metadata
+  local meta_file="$PROJECT_ROOT/$CLAUDEMIX_SESSIONS_DIR/${name}.meta"
+  if [[ -f "$meta_file" ]]; then
+    if grep -q '^status=' "$meta_file" 2>/dev/null; then
+      sed -i.bak 's/^status=.*/status=closed/' "$meta_file" && rm -f "${meta_file}.bak"
+    else
+      printf 'status=closed\n' >> "$meta_file"
+    fi
+  fi
+
+  log_ok "Session ${CYAN}$name${RESET} closed (worktree and branch preserved)"
+}
+
+# Reopen a closed session (rebuild tmux, relaunch panes).
+# Args: $1 = session name
+session_open() {
+  local name
+  name="$(sanitize_name "$1")"
+
+  if ! worktree_exists "$name"; then
+    die "Session '$name' not found. Create it with: claudemix $name"
+  fi
+
+  # If already running, just attach
+  if _session_is_running "$name"; then
+    log_info "Session ${CYAN}$name${RESET} is already running. Attaching..."
+    session_attach "$name"
+    return $?
+  fi
+
+  local wt_path
+  wt_path="$(worktree_path "$name")"
+
+  # Read pane layout from metadata
+  local panes=""
+  local meta_file="$PROJECT_ROOT/$CLAUDEMIX_SESSIONS_DIR/${name}.meta"
+  if [[ -f "$meta_file" ]]; then
+    panes="$(grep '^panes=' "$meta_file" 2>/dev/null | cut -d= -f2- || echo "")"
+  fi
+  panes="${panes:-$CFG_PANES}"
+
+  # Build claude command
+  local -a claude_cmd=(claude)
+  if [[ -n "$CFG_CLAUDE_FLAGS" ]]; then
+    local -a flags
+    read -ra flags <<< "$CFG_CLAUDE_FLAGS"
+    claude_cmd+=("${flags[@]}")
+  fi
+
+  # Update metadata
+  if [[ -f "$meta_file" ]]; then
+    if grep -q '^status=' "$meta_file" 2>/dev/null; then
+      sed -i.bak 's/^status=.*/status=open/' "$meta_file" && rm -f "${meta_file}.bak"
+    else
+      printf 'status=open\n' >> "$meta_file"
+    fi
+  fi
+
+  # Launch
+  if tmux_available; then
+    _session_launch_tmux "$name" "$wt_path" "$panes" "${claude_cmd[@]}"
+  else
+    _session_launch_direct "$name" "$wt_path" "${claude_cmd[@]}"
+  fi
+}
+
 # List all sessions with their status.
 # Args: $1 = format ("table", "names", "raw")
 session_list() {
@@ -160,18 +245,43 @@ session_list() {
     local tmux_status="stopped"
     local created_at=""
 
-    # Check tmux status (exact name match with =prefix)
-    if tmux_available && tmux has-session -t "=$tmux_name" 2>/dev/null; then
-      tmux_status="running"
-    fi
-
     # Read metadata
     local meta_file="$PROJECT_ROOT/$CLAUDEMIX_SESSIONS_DIR/${wt_name}.meta"
     if [[ -f "$meta_file" ]]; then
       created_at="$(grep '^created_at=' "$meta_file" 2>/dev/null | cut -d= -f2- || echo "")"
     fi
 
-    sessions+=("$wt_name|$wt_branch|$tmux_status|$wt_status|$created_at")
+    # Check tmux status
+    if tmux_available && tmux has-session -t "=$tmux_name" 2>/dev/null; then
+      tmux_status="running"
+    else
+      # Check metadata for closed vs stopped
+      local meta_status
+      meta_status="$(grep '^status=' "$meta_file" 2>/dev/null | cut -d= -f2- || echo "")"
+      if [[ "$meta_status" == "closed" ]]; then
+        tmux_status="closed"
+      fi
+    fi
+
+    # Get pane count
+    local pane_info=""
+    local total_panes=1
+    local running_panes=0
+    if [[ "$tmux_status" == "running" ]]; then
+      running_panes="$(tmux list-panes -t "=$tmux_name" 2>/dev/null | wc -l | tr -d '[:space:]')"
+    fi
+    local meta_panes
+    meta_panes="$(grep '^panes=' "$meta_file" 2>/dev/null | cut -d= -f2- || echo "")"
+    if [[ -n "$meta_panes" ]] && [[ "$meta_panes" != "claude" ]]; then
+      local sep_count=0
+      local tmp="$meta_panes"
+      tmp="${tmp//[!|\/]/}"
+      sep_count=${#tmp}
+      total_panes=$((sep_count + 1))
+    fi
+    pane_info="${running_panes}/${total_panes}"
+
+    sessions+=("$wt_name|$wt_branch|$tmux_status|$pane_info|$wt_status|$created_at")
   done < <(worktree_list)
 
   # Detect orphaned tmux sessions (tmux exists but worktree was removed)
@@ -189,7 +299,7 @@ session_list() {
         fi
       done
       if ! $found; then
-        sessions+=("$session_name|(orphaned)|running|no worktree|")
+        sessions+=("$session_name|(orphaned)|running|0/0|no worktree|")
       fi
     done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
   fi
@@ -201,18 +311,19 @@ session_list() {
 
   case "$format" in
     table)
-      printf "${BOLD}%-20s %-30s %-10s %-20s %s${RESET}\n" "NAME" "BRANCH" "STATUS" "GIT" "CREATED"
-      printf "%-20s %-30s %-10s %-20s %s\n" "────" "──────" "──────" "───" "───────"
+      printf "${BOLD}%-20s %-30s %-10s %-7s %-20s %s${RESET}\n" "NAME" "BRANCH" "STATUS" "PANES" "GIT" "CREATED"
+      printf "%-20s %-30s %-10s %-7s %-20s %s\n" "────" "──────" "──────" "─────" "───" "───────"
       for entry in "${sessions[@]}"; do
-        IFS='|' read -r s_name s_branch s_status s_git s_created <<< "$entry"
+        IFS='|' read -r s_name s_branch s_status s_panes s_git s_created <<< "$entry"
         local status_color="$RED"
         [[ "$s_status" == "running" ]] && status_color="$GREEN"
+        [[ "$s_status" == "closed" ]] && status_color="$YELLOW"
         local created_display=""
         if [[ -n "$s_created" ]]; then
           created_display="$(format_time "$s_created")"
         fi
-        printf "%-20s %-30s ${status_color}%-10s${RESET} %-20s %s\n" \
-          "$s_name" "$s_branch" "$s_status" "$s_git" "$created_display"
+        printf "%-20s %-30s ${status_color}%-10s${RESET} %-7s %-20s %s\n" \
+          "$s_name" "$s_branch" "$s_status" "$s_panes" "$s_git" "$created_display"
       done
       ;;
     names)
