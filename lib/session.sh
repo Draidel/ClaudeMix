@@ -528,6 +528,7 @@ _parse_panes() {
     read -ra rows <<< "$col"
     IFS="$old_ifs"
 
+    local first_in_col=true
     for row in "${rows[@]}"; do
       row="$(printf '%s' "$row" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
       [[ -z "$row" ]] && continue
@@ -541,15 +542,14 @@ _parse_panes() {
       if $first; then
         printf 'first\t%s\n' "$cmd"
         first=false
+      elif $first_in_col; then
+        # First pane of a new column = vertical split (side-by-side)
+        printf 'h\t%s\n' "$cmd"
       else
-        # If this row is within a column that has multiple rows, it's horizontal (v)
-        # Otherwise it's a new column, so vertical (h)
-        if (( ${#rows[@]} > 1 )); then
-          printf 'v\t%s\n' "$cmd"
-        else
-          printf 'h\t%s\n' "$cmd"
-        fi
+        # Additional row within same column = horizontal split (stacked)
+        printf 'v\t%s\n' "$cmd"
       fi
+      first_in_col=false
     done
   done
 }

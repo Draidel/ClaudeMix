@@ -505,3 +505,30 @@ format_time() {
 now_iso() {
   date -u '+%Y-%m-%dT%H:%M:%SZ'
 }
+
+# ── Config Display ────────────────────────────────────────────────────────────
+
+# Print a table showing all merged config values.
+_show_config() {
+  printf "${BOLD}ClaudeMix Configuration${RESET}\n\n"
+  printf "${DIM}Global:${RESET}  %s\n" "$CLAUDEMIX_GLOBAL_CONFIG"
+  printf "${DIM}Project:${RESET} %s\n\n" "$PROJECT_ROOT/$CLAUDEMIX_CONFIG_FILE"
+
+  printf "%-22s %s\n" "Key" "Value"
+  printf "%-22s %s\n" "───" "─────"
+  printf "%-22s %s\n" "validate" "${CFG_VALIDATE:-(auto-detected)}"
+  printf "%-22s %s\n" "protected_branches" "$CFG_PROTECTED_BRANCHES"
+  printf "%-22s %s\n" "merge_target" "$CFG_MERGE_TARGET"
+  printf "%-22s %s\n" "merge_strategy" "$CFG_MERGE_STRATEGY"
+  printf "%-22s %s\n" "base_branch" "$CFG_BASE_BRANCH"
+  printf "%-22s %s\n" "claude_flags" "$CFG_CLAUDE_FLAGS"
+  printf "%-22s %s\n" "worktree_dir" "$CFG_WORKTREE_DIR"
+  printf "%-22s %s\n" "post_create" "${CFG_POST_CREATE:-(none)}"
+  printf "%-22s %s\n" "pre_merge" "${CFG_PRE_MERGE:-(none)}"
+  printf "%-22s %s\n" "pre_remove" "${CFG_PRE_REMOVE:-(none)}"
+  printf "%-22s %s\n" "copy_files" "${CFG_COPY_FILES:-(none)}"
+  printf "%-22s %s\n" "symlink_files" "${CFG_SYMLINK_FILES:-(none)}"
+  printf "%-22s %s\n" "panes" "${CFG_PANES:-(default: claude)}"
+  printf "%-22s %s\n" "editor" "$CFG_EDITOR"
+  printf "%-22s %s\n" "dashboard_refresh" "${CFG_DASHBOARD_REFRESH}s"
+}
