@@ -7,6 +7,7 @@
 # ── Dashboard Data ─────────────────────────────────────────────────────────
 
 # Dashboard state (populated by _tui_gather_data)
+declare -g _TUI_WIDTH=60
 declare -g _TUI_SESSION_COUNT=0
 declare -g _TUI_SESSION_NAMES=""
 declare -g _TUI_SESSION_LINES=""
@@ -19,6 +20,13 @@ declare -g _TUI_HOOKS_INSTALLED=""
 
 # Collect all dashboard data in one pass.
 _tui_gather_data() {
+  # Compute width once for session line formatting
+  local term_width="${COLUMNS:-$(tput cols 2>/dev/null || printf '80')}"
+  local width=$((term_width - 4))
+  if (( width > 76 )); then width=76; fi
+  if (( width < 30 )); then width=30; fi
+  _TUI_WIDTH="$width"
+
   _TUI_SESSION_COUNT=0
   _TUI_SESSION_NAMES=""
   _TUI_SESSION_LINES=""
@@ -59,16 +67,20 @@ _tui_gather_data() {
     _TUI_SESSION_NAMES+="${sn}"$'\n'
   done
 
-  # Build rich session lines
+  # Build two-line session display
   local idx=0
   _TUI_SESSION_LINES=""
   for entry in "${raw_sessions[@]+"${raw_sessions[@]}"}"; do
     idx=$((idx + 1))
     IFS='|' read -r s_name s_branch s_status s_git s_created <<< "$entry"
 
-    # Running indicator
-    local indicator="${RED}o${RESET}"
-    [[ "$s_status" == "running" ]] && indicator="${GREEN}*${RESET}"
+    # Running indicator: green ● = running, red ● = stopped
+    local indicator="${RED}●${RESET}"
+    local state_word="${DIM}stopped${RESET}"
+    if [[ "$s_status" == "running" ]]; then
+      indicator="${GREEN}●${RESET}"
+      state_word="${GREEN}running${RESET}"
+    fi
 
     # Parse ahead/behind from git status field
     local ahead_num=0 behind_num=0
@@ -79,18 +91,21 @@ _tui_gather_data() {
       behind_num="${BASH_REMATCH[1]}"
     fi
 
-    # Build compact status: "+3!" or "+0~" or "clean"
-    local status_str=""
-    if (( ahead_num > 0 )) || (( behind_num > 0 )) || [[ "$s_git" == *"dirty"* ]]; then
-      status_str="${CYAN}+${ahead_num}${RESET}"
-      if (( behind_num > 0 )); then
-        status_str="${status_str}${YELLOW}!${RESET}"
-      fi
-      if [[ "$s_git" == *"dirty"* ]]; then
-        status_str="${status_str}${YELLOW}~${RESET}"
-      fi
-    else
-      status_str="${DIM}ok${RESET}"
+    # Build human-readable change summary
+    local changes=""
+    if (( ahead_num > 0 )); then
+      changes="${CYAN}${ahead_num} ahead${RESET}"
+    fi
+    if (( behind_num > 0 )); then
+      if [[ -n "$changes" ]]; then changes="${changes} ${DIM}·${RESET} "; fi
+      changes="${changes}${YELLOW}${behind_num} behind${RESET}"
+    fi
+    if [[ "$s_git" == *"dirty"* ]]; then
+      if [[ -n "$changes" ]]; then changes="${changes} ${DIM}·${RESET} "; fi
+      changes="${changes}${YELLOW}dirty${RESET}"
+    fi
+    if [[ -z "$changes" ]]; then
+      changes="${DIM}clean${RESET}"
     fi
 
     # Age
@@ -104,29 +119,36 @@ _tui_gather_data() {
     val_status="$(session_validate_status "$s_name")"
     local val_display=""
     case "$val_status" in
-      pass)    val_display="${GREEN}v${RESET}" ;;
-      fail)    val_display="${RED}x${RESET}" ;;
-      *)       val_display="${DIM}-${RESET}" ;;
+      pass)    val_display=" ${GREEN}✓${RESET}" ;;
+      fail)    val_display=" ${RED}✗${RESET}" ;;
+      *)       ;;
     esac
 
-    # Compact line: "  1 * name       +3!~  2h v"
-    local name_pad=$((12 - ${#s_name}))
+    # Short branch name (strip claudemix/ prefix)
+    local short_branch="${s_branch#"${CLAUDEMIX_BRANCH_PREFIX}"}"
+
+    # Line 1: "  1  ● name                     stopped · 19h"
+    local right_str="${state_word}"
+    if [[ -n "$age" ]]; then
+      right_str="${right_str} ${DIM}·${RESET} ${DIM}${age}${RESET}"
+    fi
+    local right_visible
+    right_visible="$(_tui_strip_ansi "$right_str")"
+    # 4 chars for "  1 ", 2 for "● ", rest for name + padding + right
+    local avail=$((width - 6 - ${#right_visible}))
+    local name_pad=$((avail - ${#s_name}))
     if (( name_pad < 1 )); then name_pad=1; fi
 
-    local status_visible
-    status_visible="$(_tui_strip_ansi "$status_str")"
-    local status_pad=$((6 - ${#status_visible}))
-    if (( status_pad < 1 )); then status_pad=1; fi
-
-    local age_pad=$((4 - ${#age}))
-    if (( age_pad < 1 )); then age_pad=1; fi
-
-    _TUI_SESSION_LINES+="$(printf '  %s %b %s%*s%b%*s%b%*s%b' \
+    _TUI_SESSION_LINES+="$(printf '  %s  %b %s%*s%b' \
       "$idx" "$indicator" \
       "$s_name" "$name_pad" "" \
-      "$status_str" "$status_pad" "" \
-      "${DIM}${age}${RESET}" "$age_pad" "" \
-      "$val_display")"
+      "$right_str")"
+    _TUI_SESSION_LINES+=$'\n'
+
+    # Line 2: "     branch  15 ahead · dirty  ✓"
+    _TUI_SESSION_LINES+="$(printf '     %b%s%b  %b%b' \
+      "$DIM" "$short_branch" "$RESET" \
+      "$changes" "$val_display")"
     _TUI_SESSION_LINES+=$'\n'
   done
 
@@ -207,11 +229,7 @@ _tui_divider() {
 
 # Render the full dashboard to stdout.
 _tui_render_dashboard() {
-  # Responsive width based on terminal
-  local term_width="${COLUMNS:-$(tput cols 2>/dev/null || printf '80')}"
-  local width=$((term_width - 4))
-  if (( width > 76 )); then width=76; fi
-  if (( width < 30 )); then width=30; fi
+  local width="$_TUI_WIDTH"
 
   # Clear screen for clean redraw
   printf '\033[2J\033[H'
@@ -244,7 +262,7 @@ _tui_render_dashboard() {
   printf '  %b%b\n' "$BOLD" "${session_label}${RESET}"
 
   if (( _TUI_SESSION_COUNT == 0 )); then
-    printf '  %bNo sessions. Press n to start one.%b\n' "$DIM" "$RESET"
+    printf '  %bNo sessions. Press [n] to start one.%b\n' "$DIM" "$RESET"
   else
     while IFS= read -r line; do
       [[ -z "$line" ]] && continue
@@ -264,8 +282,8 @@ _tui_render_dashboard() {
   if (( _TUI_MERGE_REBASE > 0 )); then
     merge_info="${merge_info} ${YELLOW}${_TUI_MERGE_REBASE} rebase${RESET}"
   fi
-  printf '  %bMERGE%b %b->%b %s %b(%s)%b  %b\n' \
-    "$BOLD" "$RESET" "$DIM" "$RESET" \
+  printf '  %bMERGE%b → %s %b(%s)%b  %b\n' \
+    "$BOLD" "$RESET" \
     "$CFG_MERGE_TARGET" "$DIM" "$CFG_MERGE_STRATEGY" "$RESET" \
     "$merge_info"
 
@@ -275,26 +293,26 @@ _tui_render_dashboard() {
   local health=""
   health+="$(_tui_health_check git)"
   health+=" $(_tui_health_check claude)"
-  health+=" $(_tui_health_check tmux)"
-  health+=" $(_tui_health_check gum)"
-  health+=" $(_tui_health_check gh)"
+  health+="  $(_tui_health_check tmux)"
+  health+="  $(_tui_health_check gum)"
+  health+="  $(_tui_health_check gh)"
   if [[ -n "$_TUI_WORKTREE_SIZE" ]]; then
-    health+="  ${DIM}${_TUI_WORKTREE_SIZE}${RESET}"
+    health+="  ${DIM}disk: ${_TUI_WORKTREE_SIZE}${RESET}"
   fi
   printf '  %b\n' "$health"
 
   # ── Action Bar ──
   printf '\n'
   if (( _TUI_SESSION_COUNT > 0 && _TUI_SESSION_COUNT <= 9 )); then
-    printf '  %bn%b new  %b1-%s%b attach  %bm%b merge  %bk%b kill  %bv%b validate\n' \
+    printf '  %b[n]%b new  %b[1-%s]%b attach  %b[m]%b merge  %b[k]%b kill  %b[v]%b validate\n' \
       "$BOLD" "$RESET" "$BOLD" "$_TUI_SESSION_COUNT" "$RESET" \
       "$BOLD" "$RESET" "$BOLD" "$RESET" "$BOLD" "$RESET"
   else
-    printf '  %bn%b new  %ba%b attach  %bm%b merge  %bk%b kill  %bv%b validate\n' \
+    printf '  %b[n]%b new  %b[a]%b attach  %b[m]%b merge  %b[k]%b kill  %b[v]%b validate\n' \
       "$BOLD" "$RESET" "$BOLD" "$RESET" \
       "$BOLD" "$RESET" "$BOLD" "$RESET" "$BOLD" "$RESET"
   fi
-  printf '  %bc%b cleanup  %bh%b hooks  %bi%b config  %bq%b quit\n' \
+  printf '  %b[c]%b cleanup  %b[h]%b hooks  %b[i]%b config  %b[q]%b quit\n' \
     "$BOLD" "$RESET" "$BOLD" "$RESET" \
     "$BOLD" "$RESET" "$BOLD" "$RESET"
   printf '\n'
@@ -307,13 +325,13 @@ _tui_strip_ansi() {
   printf '%s' "$1" | sed $'s/\033\[[0-9;]*m//g'
 }
 
-# Health check: compact "Xcmd" format (all ASCII).
+# Health check: "cmd ✓" or "cmd ✗" format.
 _tui_health_check() {
   local cmd="$1"
   if has_cmd "$cmd"; then
-    printf '%b+%s%b' "$GREEN" "$cmd" "$RESET"
+    printf '%b%s%b %b✓%b' "$DIM" "$cmd" "$RESET" "$GREEN" "$RESET"
   else
-    printf '%b-%s%b' "$RED" "$cmd" "$RESET"
+    printf '%s %b✗%b' "$cmd" "$RED" "$RESET"
   fi
 }
 
