@@ -42,6 +42,8 @@ source "$CLAUDEMIX_HOME/lib/hooks.sh"
 source "$CLAUDEMIX_HOME/lib/merge-queue.sh"
 # shellcheck source=lib/tui.sh
 source "$CLAUDEMIX_HOME/lib/tui.sh"
+# shellcheck source=lib/dashboard.sh
+source "$CLAUDEMIX_HOME/lib/dashboard.sh"
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
@@ -122,6 +124,43 @@ main() {
       write_default_config "$config_path"
       log_ok "Config written to $config_path"
       ;;
+    open)
+      shift
+      if [[ -n "${1:-}" ]]; then
+        session_open "$1"
+      else
+        die "Usage: claudemix open <session-name>"
+      fi
+      ;;
+    close)
+      shift
+      if [[ -n "${1:-}" ]]; then
+        session_close "$1"
+      else
+        die "Usage: claudemix close <session-name>"
+      fi
+      ;;
+    dashboard|dash)
+      dashboard_run
+      ;;
+    config)
+      shift
+      case "${1:-show}" in
+        edit)
+          "${CFG_EDITOR:-vim}" "$CLAUDEMIX_GLOBAL_CONFIG"
+          ;;
+        show)
+          _show_config
+          ;;
+        init)
+          write_global_config
+          log_ok "Global config written to $CLAUDEMIX_GLOBAL_CONFIG"
+          ;;
+        *)
+          die "Usage: claudemix config [show|edit|init]"
+          ;;
+      esac
+      ;;
     *)
       # Treat anything else as a session name
       session_create "$command" "${@:2}"
@@ -137,39 +176,59 @@ USAGE
   claudemix                         Interactive TUI menu
   claudemix <name>                  Create or attach to a named session
   claudemix <name> [claude-flags]   Create session with extra Claude flags
+  claudemix <name> --with-changes   Move uncommitted work into new session
+  claudemix <name> --pr <number>    Create session from a GitHub PR
+  claudemix <name> --panes "layout" Override pane layout for this session
+  claudemix open <name>             Reopen a closed session
+  claudemix close <name>            Close session (keep worktree/branch)
   claudemix ls                      List active sessions
-  claudemix kill <name|all>         Kill a session (keeps worktree branch)
+  claudemix kill <name|all>         Kill a session and remove worktree
   claudemix merge                   Consolidate branches into a single PR
   claudemix merge list              Show branches eligible for merge
   claudemix cleanup                 Remove worktrees for merged branches
+  claudemix dashboard               Live session monitoring dashboard
   claudemix hooks install           Install pre-commit + pre-push hooks
   claudemix hooks uninstall         Remove ClaudeMix hooks
   claudemix hooks status            Show current hook status
+  claudemix config show             Show merged configuration
+  claudemix config edit             Edit global config in $EDITOR
+  claudemix config init             Create global config with defaults
   claudemix init                    Generate .claudemix.yml config
   claudemix version                 Show version
   claudemix help                    Show this help
 
-EXAMPLES
-  claudemix auth-fix                Start Claude session for auth work
-  claudemix ui-update               Start Claude session for UI work
-  claudemix ls                      See what's running
-  claudemix merge                   Bundle finished work into one PR
-  claudemix cleanup                 Remove worktrees after PR merge
+PANE LAYOUTS
+  Define pane layouts in .claudemix.yml or with --panes flag.
+  | = side-by-side split    / = stacked split    claude = Claude pane
+
+  Examples:
+    panes: claude                        Single Claude pane (default)
+    panes: "npm run dev | claude"        Dev server left, Claude right
+    panes: "npm run dev / tests | claude" Dev + tests left, Claude right
 
 SESSION LIFECYCLE
-  1. claudemix <name>     Creates a git worktree + tmux session + launches Claude
+  1. claudemix <name>     Creates worktree + tmux session + launches panes
   2. Claude works          In an isolated branch (claudemix/<name>)
-  3. Push when ready       Pre-push hook validates code automatically
-  4. claudemix merge       Consolidate branches into a single PR
-  5. claudemix cleanup     Remove merged worktrees
+  3. claudemix close <name> Close tmux, keep worktree for later
+  4. claudemix open <name>  Reopen and resume where you left off
+  5. claudemix merge       Consolidate branches into a single PR
+  6. claudemix cleanup     Remove merged worktrees
+
+LIFECYCLE HOOKS
+  Configure in .claudemix.yml or as scripts in .claudemix/hooks/:
+    post_create   Runs after worktree creation (e.g., copy .env, run migrations)
+    pre_merge     Runs before merge (blocks on failure)
+    pre_remove    Runs before worktree removal
 
 CONFIGURATION
-  Drop a .claudemix.yml in your project root. Run 'claudemix init' to generate
-  one with auto-detected defaults.
+  Global:  ~/.config/claudemix/config.yaml (personal defaults)
+  Project: .claudemix.yml (overrides global)
+  Run 'claudemix init' to generate project config.
+  Run 'claudemix config init' for global config.
 
 DEPENDENCIES
   Required: git, claude (Claude Code CLI)
-  Optional: tmux (session persistence), gum (interactive TUI), gh (merge queue PRs)
+  Optional: tmux (panes/persistence), gum (TUI), gh (PRs), node (husky hooks)
 
 ENVIRONMENT VARIABLES
   CLAUDEMIX_DEBUG=1     Enable debug logging

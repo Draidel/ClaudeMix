@@ -91,6 +91,19 @@ merge_queue_run() {
     die "Failed to create merge branch"
   }
 
+  # Run pre_merge lifecycle hook (blocks on failure)
+  if [[ -n "$CFG_PRE_MERGE" ]] || [[ -x "$PROJECT_ROOT/$CLAUDEMIX_DIR/hooks/pre_merge" ]]; then
+    log_info "Running pre-merge validation..."
+    # Use PROJECT_ROOT as worktree path since we're on the merge branch
+    if ! _run_lifecycle_hook "pre_merge" "merge-${timestamp}" "$PROJECT_ROOT"; then
+      log_error "Pre-merge hook failed. Aborting merge."
+      git -C "$PROJECT_ROOT" checkout "${original_branch:-$CFG_MERGE_TARGET}" --quiet 2>/dev/null || true
+      git -C "$PROJECT_ROOT" branch -D "$merge_branch" 2>/dev/null || true
+      trap - EXIT
+      return 1
+    fi
+  fi
+
   # Merge each selected branch
   local merged=0
   local -a failed=()

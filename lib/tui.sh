@@ -14,16 +14,20 @@ tui_main_menu() {
     action="$(_tui_choose_action)"
 
     case "$action" in
-      new)     _tui_new_session ;;
-      attach)  _tui_attach_session ;;
-      list)    session_list "table"; _tui_pause ;;
-      merge)   _tui_merge_menu ;;
-      cleanup) _tui_cleanup ;;
-      kill)    _tui_kill_session ;;
-      hooks)   _tui_hooks_menu ;;
-      init)    _tui_init ;;
-      quit)    return 0 ;;
-      *)       return 0 ;;
+      new)       _tui_new_session ;;
+      attach)    _tui_attach_session ;;
+      open)      _tui_open_session ;;
+      close)     _tui_close_session ;;
+      list)      session_list "table"; _tui_pause ;;
+      merge)     _tui_merge_menu ;;
+      cleanup)   _tui_cleanup ;;
+      kill)      _tui_kill_session ;;
+      dashboard) dashboard_run ;;
+      hooks)     _tui_hooks_menu ;;
+      init)      _tui_init ;;
+      config)    _tui_config_menu ;;
+      quit)      return 0 ;;
+      *)         return 0 ;;
     esac
   done
 }
@@ -49,49 +53,65 @@ _tui_choose_action() {
       --cursor.foreground="6" \
       "New session" \
       "Attach to session" \
+      "Open session" \
+      "Close session" \
       "List sessions" \
       "Merge queue" \
       "Cleanup merged" \
       "Kill session" \
+      "Dashboard" \
       "Git hooks" \
       "Init config" \
+      "Global config" \
       "Quit" \
     )" || { printf 'quit'; return 0; }
 
     case "$choice" in
       "New session")        printf 'new' ;;
       "Attach to session")  printf 'attach' ;;
+      "Open session")       printf 'open' ;;
+      "Close session")      printf 'close' ;;
       "List sessions")      printf 'list' ;;
       "Merge queue")        printf 'merge' ;;
       "Cleanup merged")     printf 'cleanup' ;;
       "Kill session")       printf 'kill' ;;
+      "Dashboard")          printf 'dashboard' ;;
       "Git hooks")          printf 'hooks' ;;
       "Init config")        printf 'init' ;;
+      "Global config")      printf 'config' ;;
       "Quit")               printf 'quit' ;;
     esac
   else
     printf '\n%s\n\n' "${BOLD}$header${RESET}"
     printf '  1) New session\n'
     printf '  2) Attach to session\n'
-    printf '  3) List sessions\n'
-    printf '  4) Merge queue\n'
-    printf '  5) Cleanup merged\n'
-    printf '  6) Kill session\n'
-    printf '  7) Git hooks\n'
-    printf '  8) Init config\n'
-    printf '  9) Quit\n\n'
+    printf '  3) Open session\n'
+    printf '  4) Close session\n'
+    printf '  5) List sessions\n'
+    printf '  6) Merge queue\n'
+    printf '  7) Cleanup merged\n'
+    printf '  8) Kill session\n'
+    printf '  9) Dashboard\n'
+    printf ' 10) Git hooks\n'
+    printf ' 11) Init config\n'
+    printf ' 12) Global config\n'
+    printf ' 13) Quit\n\n'
     printf 'Choose: '
     read -r num
     case "$num" in
       1) printf 'new' ;;
       2) printf 'attach' ;;
-      3) printf 'list' ;;
-      4) printf 'merge' ;;
-      5) printf 'cleanup' ;;
-      6) printf 'kill' ;;
-      7) printf 'hooks' ;;
-      8) printf 'init' ;;
-      9|q) printf 'quit' ;;
+      3) printf 'open' ;;
+      4) printf 'close' ;;
+      5) printf 'list' ;;
+      6) printf 'merge' ;;
+      7) printf 'cleanup' ;;
+      8) printf 'kill' ;;
+      9) printf 'dashboard' ;;
+      10) printf 'hooks' ;;
+      11) printf 'init' ;;
+      12) printf 'config' ;;
+      13|q) printf 'quit' ;;
       *) printf 'quit' ;;
     esac
   fi
@@ -204,6 +224,117 @@ _tui_kill_session() {
   fi
 
   _tui_pause
+}
+
+# ── Open Session ────────────────────────────────────────────────────────────
+
+_tui_open_session() {
+  # Show only closed/stopped sessions
+  local -a names=()
+  while IFS='|' read -r s_name s_branch s_status _rest; do
+    [[ -z "$s_name" ]] && continue
+    [[ "$s_status" == "running" ]] && continue
+    names+=("$s_name")
+  done < <(session_list "raw")
+
+  if (( ${#names[@]} == 0 )); then
+    log_info "No closed sessions to open."
+    _tui_pause
+    return 0
+  fi
+
+  local selected
+  if gum_available; then
+    selected="$(printf '%s\n' "${names[@]}" | gum choose --header "Open session")" || return 0
+  else
+    printf 'Closed sessions:\n'
+    local idx=1
+    for n in "${names[@]}"; do
+      printf '  %d) %s\n' "$idx" "$n"
+      idx=$((idx + 1))
+    done
+    printf 'Choose: '
+    read -r num
+    if [[ "$num" =~ ^[0-9]+$ ]] && (( num >= 1 && num <= ${#names[@]} )); then
+      selected="${names[$((num-1))]}"
+    fi
+  fi
+
+  if [[ -n "${selected:-}" ]]; then
+    session_open "$selected"
+  fi
+}
+
+# ── Close Session ───────────────────────────────────────────────────────────
+
+_tui_close_session() {
+  # Show only running sessions
+  local -a names=()
+  while IFS='|' read -r s_name s_branch s_status _rest; do
+    [[ -z "$s_name" ]] && continue
+    [[ "$s_status" != "running" ]] && continue
+    names+=("$s_name")
+  done < <(session_list "raw")
+
+  if (( ${#names[@]} == 0 )); then
+    log_info "No running sessions to close."
+    _tui_pause
+    return 0
+  fi
+
+  local selected
+  if gum_available; then
+    selected="$(printf '%s\n' "${names[@]}" | gum choose --header "Close session")" || return 0
+  else
+    printf 'Running sessions:\n'
+    local idx=1
+    for n in "${names[@]}"; do
+      printf '  %d) %s\n' "$idx" "$n"
+      idx=$((idx + 1))
+    done
+    printf 'Choose: '
+    read -r num
+    if [[ "$num" =~ ^[0-9]+$ ]] && (( num >= 1 && num <= ${#names[@]} )); then
+      selected="${names[$((num-1))]}"
+    fi
+  fi
+
+  if [[ -n "${selected:-}" ]]; then
+    session_close "$selected"
+  fi
+
+  _tui_pause
+}
+
+# ── Config Menu ─────────────────────────────────────────────────────────────
+
+_tui_config_menu() {
+  local action
+  if gum_available; then
+    action="$(gum choose \
+      --header "Global Config" \
+      "Show merged config" \
+      "Edit global config" \
+      "Create global config" \
+      "Back" \
+    )" || return 0
+  else
+    printf '\n  1) Show merged config\n  2) Edit global config\n  3) Create global config\n  4) Back\nChoose: '
+    read -r num
+    case "$num" in
+      1) action="Show merged config" ;;
+      2) action="Edit global config" ;;
+      3) action="Create global config" ;;
+      *) return 0 ;;
+    esac
+  fi
+
+  case "$action" in
+    "Show merged config")   _show_config; _tui_pause ;;
+    "Edit global config")   "${CFG_EDITOR:-vim}" "$CLAUDEMIX_GLOBAL_CONFIG" ;;
+    "Create global config") write_global_config; log_ok "Global config written to $CLAUDEMIX_GLOBAL_CONFIG"; _tui_pause ;;
+    "Back")                 return 0 ;;
+  esac
 }
 
 # ── Cleanup ──────────────────────────────────────────────────────────────────

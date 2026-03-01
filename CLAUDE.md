@@ -18,6 +18,7 @@ lib/session.sh      Session CRUD: create, attach, list, kill (tmux + worktree li
 lib/worktree.sh     Git worktree management: create, remove, list, cleanup merged
 lib/hooks.sh        Git hooks installer: husky path (Node.js) + direct path (others)
 lib/merge-queue.sh  Branch consolidation: select, merge, validate, push, create PR
+lib/dashboard.sh    Live dashboard: session monitoring, pane status display
 lib/tui.sh          Interactive TUI menus (gum with basic prompt fallback)
 install.sh          Installer: clone, PATH, completions, dependency check
 ```
@@ -70,7 +71,8 @@ There are no automated tests yet. When adding tests, use [bats-core](https://git
 3. Add auto-detection in `_detect_defaults()` if applicable
 4. Add to `write_default_config()`
 5. Add to `.claudemix.yml.example`
-6. Document in README.md
+6. If applicable, add to `write_global_config()` in `core.sh`
+7. Document in README.md
 
 ### Adding a new command
 
@@ -78,7 +80,7 @@ There are no automated tests yet. When adding tests, use [bats-core](https://git
 2. Implement function in appropriate `lib/*.sh` module
 3. Add to `_show_help()` in `bin/claudemix`
 4. Add to `_tui_choose_action()` in `tui.sh` (both gum and fallback paths)
-5. Add to both `completions/claudemix.{zsh,bash}`
+5. Add to `completions/claudemix.{zsh,bash,fish}`
 
 ### DRY helpers
 
@@ -106,6 +108,7 @@ bin/claudemix
                  lib/session.sh (depends on core.sh, worktree.sh)
                  lib/hooks.sh (depends on core.sh)
                  lib/merge-queue.sh (depends on core.sh, worktree.sh)
+                 lib/dashboard.sh (depends on core.sh, session.sh)
                  lib/tui.sh (depends on core.sh, session.sh, worktree.sh, hooks.sh, merge-queue.sh)
 ```
 

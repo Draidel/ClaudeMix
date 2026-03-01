@@ -1,6 +1,7 @@
 # ClaudeMix configuration
 # Drop this file as .claudemix.yml in your project root.
 # All values are optional — ClaudeMix auto-detects sensible defaults.
+# Global defaults: ~/.config/claudemix/config.yaml
 # https://github.com/Draidel/ClaudeMix
 
 # Command to validate code before push.
@@ -27,3 +28,22 @@ worktree_dir: .claudemix/worktrees
 
 # Extra flags to pass to Claude Code on every session launch.
 claude_flags: --dangerously-skip-permissions --verbose
+
+# Lifecycle hooks (run during worktree operations).
+# Also supports script files in .claudemix/hooks/ (takes precedence).
+# post_create: cp .env.example .env && pnpm install
+# pre_merge: pnpm test
+# pre_remove: echo cleaning up
+
+# Files to copy into new worktrees (comma-separated globs).
+# Useful for environment files not tracked by git.
+# copy_files: .env,.env.local,.env.development
+
+# Files/directories to symlink into new worktrees (comma-separated).
+# Useful for large dependencies like node_modules.
+# symlink_files: node_modules
+
+# Pane layout: commands separated by | (side-by-side) and / (stacked).
+# "claude" is replaced with the Claude command. Default: claude only.
+# panes: npm run dev | claude
+# panes: npm run dev / pnpm test --watch | claude

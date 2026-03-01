@@ -5,17 +5,24 @@ class Claudemix < Formula
   version "0.2.0"
   license "MIT"
 
-  depends_on "bash" => "4.0"
+  depends_on "bash"
   depends_on "git"
 
   def install
-    bin.install "bin/claudemix"
-    lib.install Dir["lib/*.sh"]
-
-    # Shell completions
+    # Install shell completions before moving everything to libexec
     bash_completion.install "completions/claudemix.bash" => "claudemix"
     zsh_completion.install "completions/claudemix.zsh" => "_claudemix"
     fish_completion.install "completions/claudemix.fish" => "claudemix.fish"
+
+    # Install the whole project tree into libexec so the script's
+    # symlink-resolving CLAUDEMIX_HOME logic finds lib/*.sh correctly
+    libexec.install Dir["*"]
+
+    # Create a wrapper that exec's the real script
+    (bin/"claudemix").write <<~SH
+      #!/bin/bash
+      exec "#{libexec}/bin/claudemix" "$@"
+    SH
   end
 
   def caveats

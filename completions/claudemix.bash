@@ -6,7 +6,7 @@ _claudemix() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  commands="ls list kill merge cleanup clean hooks init version help"
+  commands="ls list open close kill merge cleanup clean dashboard dash hooks config init version help"
 
   case "$prev" in
     claudemix)
@@ -25,6 +25,14 @@ _claudemix() {
       ;;
     merge)
       COMPREPLY=($(compgen -W "list ls" -- "$cur"))
+      ;;
+    open|close)
+      local sessions
+      sessions="$(claudemix ls 2>/dev/null | tail -n +3 | awk '{print $1}' 2>/dev/null)"
+      COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
+      ;;
+    config)
+      COMPREPLY=($(compgen -W "show edit init" -- "$cur"))
       ;;
   esac
 }

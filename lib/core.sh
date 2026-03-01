@@ -13,6 +13,8 @@ readonly CLAUDEMIX_WORKTREES_DIR="$CLAUDEMIX_DIR/worktrees"
 readonly CLAUDEMIX_SESSIONS_DIR="$CLAUDEMIX_DIR/sessions"
 readonly CLAUDEMIX_BRANCH_PREFIX="claudemix/"
 readonly CLAUDEMIX_TMUX_PREFIX="claudemix-"
+readonly CLAUDEMIX_GLOBAL_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claudemix"
+readonly CLAUDEMIX_GLOBAL_CONFIG="${CLAUDEMIX_GLOBAL_CONFIG_DIR}/config.yaml"
 
 # ── Colors ───────────────────────────────────────────────────────────────────
 
@@ -107,10 +109,60 @@ declare -g CFG_MERGE_STRATEGY="squash"
 declare -g CFG_CLAUDE_FLAGS="--dangerously-skip-permissions"
 declare -g CFG_BASE_BRANCH=""
 declare -g CFG_WORKTREE_DIR=""
+declare -g CFG_POST_CREATE=""
+declare -g CFG_PRE_MERGE=""
+declare -g CFG_PRE_REMOVE=""
+declare -g CFG_COPY_FILES=""
+declare -g CFG_SYMLINK_FILES=""
+declare -g CFG_PANES=""
+declare -g CFG_EDITOR="${EDITOR:-vim}"
+declare -g CFG_DASHBOARD_REFRESH="2"
+
+# Load global user config from ~/.config/claudemix/config.yaml.
+# Sets CFG_* defaults that project config can override.
+_load_global_config() {
+  if [[ ! -f "$CLAUDEMIX_GLOBAL_CONFIG" ]]; then
+    log_debug "No global config found at $CLAUDEMIX_GLOBAL_CONFIG"
+    return 0
+  fi
+
+  log_debug "Loading global config from $CLAUDEMIX_GLOBAL_CONFIG"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%%#*}"
+    [[ -z "${line// /}" ]] && continue
+
+    if [[ "$line" =~ ^[[:space:]]*([a-zA-Z_][a-zA-Z0-9_]*)[[:space:]]*:[[:space:]]*(.*) ]]; then
+      local key="${BASH_REMATCH[1]}"
+      local value="${BASH_REMATCH[2]}"
+      value="${value%"${value##*[![:space:]]}"}"
+
+      case "$key" in
+        validate)            CFG_VALIDATE="$value" ;;
+        protected_branches)  CFG_PROTECTED_BRANCHES="$value" ;;
+        merge_target)        CFG_MERGE_TARGET="$value" ;;
+        merge_strategy)      CFG_MERGE_STRATEGY="$value" ;;
+        claude_flags)        CFG_CLAUDE_FLAGS="$value" ;;
+        base_branch)         CFG_BASE_BRANCH="$value" ;;
+        worktree_dir)        CFG_WORKTREE_DIR="$value" ;;
+        post_create)         CFG_POST_CREATE="$value" ;;
+        pre_merge)           CFG_PRE_MERGE="$value" ;;
+        pre_remove)          CFG_PRE_REMOVE="$value" ;;
+        copy_files)          CFG_COPY_FILES="$value" ;;
+        symlink_files)       CFG_SYMLINK_FILES="$value" ;;
+        panes)               CFG_PANES="$value" ;;
+        editor)              CFG_EDITOR="$value" ;;
+        dashboard_refresh)   CFG_DASHBOARD_REFRESH="$value" ;;
+        *)                   log_debug "Unknown global config key: $key" ;;
+      esac
+    fi
+  done < "$CLAUDEMIX_GLOBAL_CONFIG"
+}
 
 # Parse a flat YAML config file (key: value, no nesting).
 # Handles comments, blank lines, and colons in values.
 load_config() {
+  _load_global_config
   local config_path="$PROJECT_ROOT/$CLAUDEMIX_CONFIG_FILE"
 
   if [[ ! -f "$config_path" ]]; then
@@ -141,6 +193,14 @@ load_config() {
         claude_flags)        CFG_CLAUDE_FLAGS="$value" ;;
         base_branch)         CFG_BASE_BRANCH="$value" ;;
         worktree_dir)        CFG_WORKTREE_DIR="$value" ;;
+        post_create)         CFG_POST_CREATE="$value" ;;
+        pre_merge)           CFG_PRE_MERGE="$value" ;;
+        pre_remove)          CFG_PRE_REMOVE="$value" ;;
+        copy_files)          CFG_COPY_FILES="$value" ;;
+        symlink_files)       CFG_SYMLINK_FILES="$value" ;;
+        panes)               CFG_PANES="$value" ;;
+        editor)              CFG_EDITOR="$value" ;;
+        dashboard_refresh)   CFG_DASHBOARD_REFRESH="$value" ;;
         *)                   log_debug "Unknown config key: $key" ;;
       esac
     fi
@@ -258,6 +318,51 @@ _validate_config() {
       CFG_PROTECTED_BRANCHES="$cleaned"
     fi
   fi
+
+  # Validate lifecycle hook commands (same rules as validate)
+  for hook_var in CFG_POST_CREATE CFG_PRE_MERGE CFG_PRE_REMOVE; do
+    local hook_val="${!hook_var}"
+    if [[ -n "$hook_val" ]]; then
+      # shellcheck disable=SC2016
+      if [[ "$hook_val" == *'$('* ]] || [[ "$hook_val" == *'`'* ]] \
+        || [[ "$hook_val" == *';'* ]] || [[ "$hook_val" == *'|'* ]] \
+        || [[ "$hook_val" == *'>'* ]] || [[ "$hook_val" == *'<'* ]] \
+        || [[ "$hook_val" == *$'\n'* ]]; then
+        log_warn "Unsafe characters in $hook_var config — rejecting"
+        declare -g "$hook_var="
+      fi
+    fi
+  done
+
+  # Validate copy_files / symlink_files: no path traversal, no shell metacharacters
+  for files_var in CFG_COPY_FILES CFG_SYMLINK_FILES; do
+    local files_val="${!files_var}"
+    if [[ -n "$files_val" ]]; then
+      if [[ "$files_val" == *".."* ]] || [[ "$files_val" == /* ]]; then
+        log_warn "Unsafe path in $files_var config — rejecting"
+        declare -g "$files_var="
+      fi
+    fi
+  done
+
+  # Validate dashboard_refresh: must be a positive integer
+  if [[ -n "$CFG_DASHBOARD_REFRESH" ]]; then
+    if ! [[ "$CFG_DASHBOARD_REFRESH" =~ ^[0-9]+$ ]] || (( CFG_DASHBOARD_REFRESH < 1 )); then
+      log_warn "Invalid dashboard_refresh '${CFG_DASHBOARD_REFRESH}' — using default 2"
+      CFG_DASHBOARD_REFRESH="2"
+    fi
+  fi
+
+  # Validate panes: reject shell metacharacters except | and / (layout operators)
+  if [[ -n "$CFG_PANES" ]]; then
+    # shellcheck disable=SC2016
+    if [[ "$CFG_PANES" == *'$('* ]] || [[ "$CFG_PANES" == *'`'* ]] \
+      || [[ "$CFG_PANES" == *';'* ]] || [[ "$CFG_PANES" == *'>'* ]] \
+      || [[ "$CFG_PANES" == *'<'* ]]; then
+      log_warn "Unsafe characters in panes config — rejecting"
+      CFG_PANES=""
+    fi
+  fi
 }
 
 # Write default config to a file.
@@ -274,7 +379,33 @@ write_default_config() {
     printf 'base_branch: %s\n' "${CFG_BASE_BRANCH}"
     printf 'claude_flags: %s\n' "${CFG_CLAUDE_FLAGS}"
     printf 'worktree_dir: %s\n' "${CFG_WORKTREE_DIR}"
+    printf '\n# Lifecycle hooks (run during worktree operations)\n'
+    printf '# post_create: pnpm install && cp .env.example .env\n'
+    printf '# pre_merge: pnpm test\n'
+    printf '# pre_remove: echo cleaning up\n'
+    printf '\n# Files to copy into new worktrees (comma-separated globs)\n'
+    printf '# copy_files: .env,.env.local\n'
+    printf '\n# Files to symlink into new worktrees (comma-separated globs)\n'
+    printf '# symlink_files: node_modules\n'
+    printf '\n# Pane layout: commands separated by | (side-by-side) and / (stacked)\n'
+    printf '# "claude" is replaced with the Claude command. Default: claude\n'
+    printf '# panes: npm run dev | claude\n'
   } > "$config_path"
+}
+
+# Write global config with defaults.
+write_global_config() {
+  mkdir -p "$CLAUDEMIX_GLOBAL_CONFIG_DIR"
+  {
+    printf '# ClaudeMix global configuration\n'
+    printf '# Personal defaults — project .claudemix.yml overrides these.\n'
+    printf '# https://github.com/Draidel/ClaudeMix\n\n'
+    printf '# editor: vim\n'
+    printf '# dashboard_refresh: 2\n'
+    printf '# claude_flags: --dangerously-skip-permissions\n'
+    printf '# merge_strategy: squash\n'
+    printf '# panes: claude\n'
+  } > "$CLAUDEMIX_GLOBAL_CONFIG"
 }
 
 # ── Dependency Checks ────────────────────────────────────────────────────────
@@ -373,4 +504,31 @@ format_time() {
 # Generate an ISO 8601 UTC timestamp.
 now_iso() {
   date -u '+%Y-%m-%dT%H:%M:%SZ'
+}
+
+# ── Config Display ────────────────────────────────────────────────────────────
+
+# Print a table showing all merged config values.
+_show_config() {
+  printf "${BOLD}ClaudeMix Configuration${RESET}\n\n"
+  printf "${DIM}Global:${RESET}  %s\n" "$CLAUDEMIX_GLOBAL_CONFIG"
+  printf "${DIM}Project:${RESET} %s\n\n" "$PROJECT_ROOT/$CLAUDEMIX_CONFIG_FILE"
+
+  printf "%-22s %s\n" "Key" "Value"
+  printf "%-22s %s\n" "───" "─────"
+  printf "%-22s %s\n" "validate" "${CFG_VALIDATE:-(auto-detected)}"
+  printf "%-22s %s\n" "protected_branches" "$CFG_PROTECTED_BRANCHES"
+  printf "%-22s %s\n" "merge_target" "$CFG_MERGE_TARGET"
+  printf "%-22s %s\n" "merge_strategy" "$CFG_MERGE_STRATEGY"
+  printf "%-22s %s\n" "base_branch" "$CFG_BASE_BRANCH"
+  printf "%-22s %s\n" "claude_flags" "$CFG_CLAUDE_FLAGS"
+  printf "%-22s %s\n" "worktree_dir" "$CFG_WORKTREE_DIR"
+  printf "%-22s %s\n" "post_create" "${CFG_POST_CREATE:-(none)}"
+  printf "%-22s %s\n" "pre_merge" "${CFG_PRE_MERGE:-(none)}"
+  printf "%-22s %s\n" "pre_remove" "${CFG_PRE_REMOVE:-(none)}"
+  printf "%-22s %s\n" "copy_files" "${CFG_COPY_FILES:-(none)}"
+  printf "%-22s %s\n" "symlink_files" "${CFG_SYMLINK_FILES:-(none)}"
+  printf "%-22s %s\n" "panes" "${CFG_PANES:-(default: claude)}"
+  printf "%-22s %s\n" "editor" "$CFG_EDITOR"
+  printf "%-22s %s\n" "dashboard_refresh" "${CFG_DASHBOARD_REFRESH}s"
 }
