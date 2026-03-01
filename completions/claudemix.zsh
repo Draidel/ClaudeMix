@@ -7,11 +7,16 @@ _claudemix() {
   commands=(
     'ls:List active sessions'
     'list:List active sessions'
+    'open:Reopen a closed session'
+    'close:Close session (keep worktree)'
     'kill:Kill a session'
     'merge:Consolidate branches into a single PR'
     'cleanup:Remove worktrees for merged branches'
     'clean:Remove worktrees for merged branches'
+    'dashboard:Live session monitoring'
+    'dash:Live session monitoring'
     'hooks:Manage git hooks'
+    'config:Manage configuration'
     'init:Generate .claudemix.yml config'
     'version:Show version'
     'help:Show help'
@@ -28,6 +33,13 @@ _claudemix() {
   merge_subcommands=(
     'list:Show branches eligible for merge'
     'ls:Show branches eligible for merge'
+  )
+
+  local -a config_subcommands
+  config_subcommands=(
+    'show:Show merged configuration'
+    'edit:Edit global config'
+    'init:Create global config'
   )
 
   _arguments -C \
@@ -58,6 +70,14 @@ _claudemix() {
           ;;
         merge)
           _describe 'merge subcommand' merge_subcommands
+          ;;
+        open|close)
+          local sessions
+          sessions=($(claudemix ls 2>/dev/null | tail -n +3 | awk '{print $1}' 2>/dev/null))
+          _describe 'session' sessions
+          ;;
+        config)
+          _describe 'config subcommand' config_subcommands
           ;;
       esac
       ;;
