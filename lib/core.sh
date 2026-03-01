@@ -107,6 +107,14 @@ declare -g CFG_MERGE_STRATEGY="squash"
 declare -g CFG_CLAUDE_FLAGS="--dangerously-skip-permissions"
 declare -g CFG_BASE_BRANCH=""
 declare -g CFG_WORKTREE_DIR=""
+declare -g CFG_POST_CREATE=""
+declare -g CFG_PRE_MERGE=""
+declare -g CFG_PRE_REMOVE=""
+declare -g CFG_COPY_FILES=""
+declare -g CFG_SYMLINK_FILES=""
+declare -g CFG_PANES=""
+declare -g CFG_EDITOR="${EDITOR:-vim}"
+declare -g CFG_DASHBOARD_REFRESH="2"
 
 # Parse a flat YAML config file (key: value, no nesting).
 # Handles comments, blank lines, and colons in values.
@@ -141,6 +149,14 @@ load_config() {
         claude_flags)        CFG_CLAUDE_FLAGS="$value" ;;
         base_branch)         CFG_BASE_BRANCH="$value" ;;
         worktree_dir)        CFG_WORKTREE_DIR="$value" ;;
+        post_create)         CFG_POST_CREATE="$value" ;;
+        pre_merge)           CFG_PRE_MERGE="$value" ;;
+        pre_remove)          CFG_PRE_REMOVE="$value" ;;
+        copy_files)          CFG_COPY_FILES="$value" ;;
+        symlink_files)       CFG_SYMLINK_FILES="$value" ;;
+        panes)               CFG_PANES="$value" ;;
+        editor)              CFG_EDITOR="$value" ;;
+        dashboard_refresh)   CFG_DASHBOARD_REFRESH="$value" ;;
         *)                   log_debug "Unknown config key: $key" ;;
       esac
     fi
@@ -258,6 +274,51 @@ _validate_config() {
       CFG_PROTECTED_BRANCHES="$cleaned"
     fi
   fi
+
+  # Validate lifecycle hook commands (same rules as validate)
+  for hook_var in CFG_POST_CREATE CFG_PRE_MERGE CFG_PRE_REMOVE; do
+    local hook_val="${!hook_var}"
+    if [[ -n "$hook_val" ]]; then
+      # shellcheck disable=SC2016
+      if [[ "$hook_val" == *'$('* ]] || [[ "$hook_val" == *'`'* ]] \
+        || [[ "$hook_val" == *';'* ]] || [[ "$hook_val" == *'|'* ]] \
+        || [[ "$hook_val" == *'>'* ]] || [[ "$hook_val" == *'<'* ]] \
+        || [[ "$hook_val" == *$'\n'* ]]; then
+        log_warn "Unsafe characters in $hook_var config — rejecting"
+        declare -g "$hook_var="
+      fi
+    fi
+  done
+
+  # Validate copy_files / symlink_files: no path traversal, no shell metacharacters
+  for files_var in CFG_COPY_FILES CFG_SYMLINK_FILES; do
+    local files_val="${!files_var}"
+    if [[ -n "$files_val" ]]; then
+      if [[ "$files_val" == *".."* ]] || [[ "$files_val" == /* ]]; then
+        log_warn "Unsafe path in $files_var config — rejecting"
+        declare -g "$files_var="
+      fi
+    fi
+  done
+
+  # Validate dashboard_refresh: must be a positive integer
+  if [[ -n "$CFG_DASHBOARD_REFRESH" ]]; then
+    if ! [[ "$CFG_DASHBOARD_REFRESH" =~ ^[0-9]+$ ]] || (( CFG_DASHBOARD_REFRESH < 1 )); then
+      log_warn "Invalid dashboard_refresh '${CFG_DASHBOARD_REFRESH}' — using default 2"
+      CFG_DASHBOARD_REFRESH="2"
+    fi
+  fi
+
+  # Validate panes: reject shell metacharacters except | and / (layout operators)
+  if [[ -n "$CFG_PANES" ]]; then
+    # shellcheck disable=SC2016
+    if [[ "$CFG_PANES" == *'$('* ]] || [[ "$CFG_PANES" == *'`'* ]] \
+      || [[ "$CFG_PANES" == *';'* ]] || [[ "$CFG_PANES" == *'>'* ]] \
+      || [[ "$CFG_PANES" == *'<'* ]]; then
+      log_warn "Unsafe characters in panes config — rejecting"
+      CFG_PANES=""
+    fi
+  fi
 }
 
 # Write default config to a file.
@@ -274,6 +335,17 @@ write_default_config() {
     printf 'base_branch: %s\n' "${CFG_BASE_BRANCH}"
     printf 'claude_flags: %s\n' "${CFG_CLAUDE_FLAGS}"
     printf 'worktree_dir: %s\n' "${CFG_WORKTREE_DIR}"
+    printf '\n# Lifecycle hooks (run during worktree operations)\n'
+    printf '# post_create: pnpm install && cp .env.example .env\n'
+    printf '# pre_merge: pnpm test\n'
+    printf '# pre_remove: echo cleaning up\n'
+    printf '\n# Files to copy into new worktrees (comma-separated globs)\n'
+    printf '# copy_files: .env,.env.local\n'
+    printf '\n# Files to symlink into new worktrees (comma-separated globs)\n'
+    printf '# symlink_files: node_modules\n'
+    printf '\n# Pane layout: commands separated by | (side-by-side) and / (stacked)\n'
+    printf '# "claude" is replaced with the Claude command. Default: claude\n'
+    printf '# panes: npm run dev | claude\n'
   } > "$config_path"
 }
 
